@@ -48,17 +48,22 @@ def _fmt_length(seconds: int | None) -> str:
 # --- builders ---
 
 
-async def _unsquished_file(
-    bot: HolodoriBot, path: str | None, aspect: float, name: str
-) -> discord.File | None:
+async def unsquished_bytes(bot: HolodoriBot, path: str | None, aspect: float) -> bytes | None:
+    """fetch a squished cdn asset and unsquish it to its true aspect (png bytes), or None."""
     if not path or not bot.holo:
         return None
     try:
         raw = await bot.holo.fetch_bytes(bot.holo.image_url(path))
-        png = await asyncio.to_thread(imaging.unsquish, raw, aspect)
-        return discord.File(io.BytesIO(png), name)
+        return await asyncio.to_thread(imaging.unsquish, raw, aspect)
     except Exception:
         return None
+
+
+async def _unsquished_file(
+    bot: HolodoriBot, path: str | None, aspect: float, name: str
+) -> discord.File | None:
+    png = await unsquished_bytes(bot, path, aspect)
+    return discord.File(io.BytesIO(png), name) if png else None
 
 
 async def card_embed(bot: HolodoriBot, card: CardDetail) -> tuple[discord.Embed, list[discord.File]]:

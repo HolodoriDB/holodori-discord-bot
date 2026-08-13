@@ -8,7 +8,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from helpers import embeds, timezones
+from helpers import details, embeds, imaging, timezones
 from helpers.autocompletes import REGION_CHOICES, REGION_LABELS, autocompletes
 from services.graph import render_graph
 from services.holodori import HolodoriError
@@ -100,20 +100,24 @@ class GraphCog(commands.Cog):
         last_ms = max((int(p[0]) for _, s, _ in lines for p in s), default=0)
         if last_ms:
             embed.description = f"**Last Data Update:** <t:{last_ms // 1000}:R>"
-        logo = await self._event_logo(region, event)
-        if logo:
-            embed.set_thumbnail(url=logo)
+        files = [discord.File(io.BytesIO(img), "graph.png")]
+        logo_bytes = await self._event_logo(region, event)
+        if logo_bytes:
+            files.append(discord.File(io.BytesIO(logo_bytes), "logo.png"))
+            embed.set_thumbnail(url="attachment://logo.png")
         embed.set_image(url="attachment://graph.png")
-        await interaction.followup.send(embed=embed, file=discord.File(io.BytesIO(img), "graph.png"))
+        await interaction.followup.send(embed=embed, files=files)
 
-    async def _event_logo(self, region: str, event_id: str | None) -> str | None:
+    async def _event_logo(self, region: str, event_id: str | None) -> bytes | None:
         assert self.bot.data and self.bot.holo
         try:
             events = await self.bot.data.events(region, self.bot.holo.lang)
         except HolodoriError:
             return None
         ev = next((e for e in events if e.eventId == event_id), events[0] if events else None)
-        return self.bot.holo.image_url(ev.logo) if ev and ev.logo else None
+        if not ev or not ev.logo:
+            return None
+        return await details.unsquished_bytes(self.bot, ev.logo, imaging.ASPECT_LOGO)
 
 
 async def setup(bot: HolodoriBot) -> None:

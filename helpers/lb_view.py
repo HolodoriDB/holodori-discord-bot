@@ -22,7 +22,8 @@ class LeaderboardView(HoloView):
         *,
         rows: list[dict],
         title: str,
-        thumb: str | None,
+        thumb: str | None = None,
+        thumb_bytes: bytes | None = None,
         restrict_to: int,
         per_page: int = PER_PAGE,
     ) -> None:
@@ -30,6 +31,7 @@ class LeaderboardView(HoloView):
         self.rows = rows
         self.title = title
         self.thumb = thumb
+        self.thumb_bytes = thumb_bytes
         self.per_page = per_page
         self.page = 1
         self.offset = False
@@ -61,10 +63,18 @@ class LeaderboardView(HoloView):
         columns = ["Score", "Change"] if self.offset else ["Score"]
         return render_leaderboard(self._lbrows(), columns, show_delta=self.offset)
 
+    def _files(self, img: bytes) -> list[discord.File]:
+        files = [discord.File(io.BytesIO(img), "lb.png")]
+        if self.thumb_bytes:
+            files.append(discord.File(io.BytesIO(self.thumb_bytes), "thumb.png"))
+        return files
+
     def _embed(self) -> discord.Embed:
         embed = embeds.embed(title=self.title)
         embed.set_image(url="attachment://lb.png")
-        if self.thumb:
+        if self.thumb_bytes:
+            embed.set_thumbnail(url="attachment://thumb.png")
+        elif self.thumb:
             embed.set_thumbnail(url=self.thumb)
         embed.set_footer(text=f"Page {self.page}/{self.total_pages}")
         return embed
@@ -72,16 +82,14 @@ class LeaderboardView(HoloView):
     async def send_initial(self, interaction: discord.Interaction) -> None:
         img = await asyncio.to_thread(self._render)
         self.message = await interaction.followup.send(
-            embed=self._embed(), file=discord.File(io.BytesIO(img), "lb.png"), view=self, wait=True
+            embed=self._embed(), files=self._files(img), view=self, wait=True
         )
 
     async def _refresh(self, interaction: discord.Interaction) -> None:
         self._update()
         img = await asyncio.to_thread(self._render)
         await interaction.response.edit_message(
-            embed=self._embed(),
-            attachments=[discord.File(io.BytesIO(img), "lb.png")],
-            view=self,
+            embed=self._embed(), attachments=self._files(img), view=self
         )
 
     @discord.ui.button(emoji="⬅️", style=discord.ButtonStyle.primary)

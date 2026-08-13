@@ -8,7 +8,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from data.models import EventInfo
-from helpers import details, embeds
+from helpers import details, embeds, imaging
 from helpers.autocompletes import REGION_CHOICES, REGION_LABELS, autocompletes
 
 if TYPE_CHECKING:
@@ -136,9 +136,9 @@ class EventsCog(commands.Cog):
             )
             return
         title = f"{data.get('eventName', 'Event')} - Top 100"
-        thumb = self.bot.holo.image_url(data["logo"]) if data.get("logo") else None
+        logo_bytes = await details.unsquished_bytes(self.bot, data.get("logo"), imaging.ASPECT_LOGO)
         view = LeaderboardView(
-            rows=rankings, title=title, thumb=thumb, restrict_to=interaction.user.id
+            rows=rankings, title=title, thumb_bytes=logo_bytes, restrict_to=interaction.user.id
         )
         await view.send_initial(interaction)
 

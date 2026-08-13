@@ -12,7 +12,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from data import search
-from helpers import embeds, imaging
+from helpers import details, embeds, imaging
 from helpers.emojis import emojis
 from helpers.views import HoloView
 from services import song_clip
@@ -267,7 +267,7 @@ class GuessCog(commands.Cog):
             r["answer"] = ev.eventId
             r["answerName"] = ev.name
             r["region"] = "us"
-            r["reveal_image"] = holo.image_url(ev.logo)
+            r["reveal_file"] = await details.unsquished_bytes(self.bot, ev.logo, imaging.ASPECT_LOGO)
             r["data"]["image"] = img
             r["data"]["event_type"] = "Song Score" if ev.isSongScore else "Marathon"
             return r
@@ -344,11 +344,21 @@ class GuessCog(commands.Cog):
             extra += f"\n**Card:** {data['data']['card_name']}"
         return extra
 
-    def _reveal_embed(self, data: dict, *, title: str, description: str, color) -> discord.Embed:
-        embed = embeds.embed(title=title, description=description, color=color)
+    def _reveal_media(self, data: dict, embed: discord.Embed) -> list[discord.File]:
+        # event logos are squished, so they're unsquished at build time and attached; other
+        # reveals (jacket / chart png / card thumb) are unsquished already and go by url
+        if data.get("reveal_file"):
+            embed.set_image(url="attachment://reveal.png")
+            return [discord.File(io.BytesIO(data["reveal_file"]), "reveal.png")]
         if data.get("reveal_image"):
             embed.set_image(url=data["reveal_image"])
-        return embed
+        return []
+
+    def _reveal_embed(
+        self, data: dict, *, title: str, description: str, color
+    ) -> tuple[discord.Embed, list[discord.File]]:
+        embed = embeds.embed(title=title, description=description, color=color)
+        return embed, self._reveal_media(data, embed)
 
     def _time_embed(self, data: dict) -> discord.Embed:
         if not data.get("startTime"):
@@ -364,10 +374,9 @@ class GuessCog(commands.Cog):
         if self.bot.user_data:
             await self.bot.user_data.add_guesses(message.author.id, data["guessing"], "success")
         embed = embeds.success_embed(title="Correct", description=desc)
-        if data.get("reveal_image"):
-            embed.set_image(url=data["reveal_image"])
+        files = self._reveal_media(data, embed)
         view = _GuessResultView(self, data)
-        view.message = await message.reply(embed=embed, view=view)
+        view.message = await message.reply(embed=embed, files=files, view=view)
 
     # --- timeout loop ---
 
@@ -385,7 +394,7 @@ class GuessCog(commands.Cog):
             channel = data.get("channel") or self.bot.get_channel(channel_id)
             if not isinstance(channel, discord.abc.Messageable):
                 continue
-            embed = self._reveal_embed(
+            embed, files = self._reveal_embed(
                 data,
                 title="Failed",
                 description=f"You failed to guess the {data['guessType']}.",
@@ -398,7 +407,7 @@ class GuessCog(commands.Cog):
             )
             try:
                 view = _GuessResultView(self, data)
-                view.message = await channel.send(embed=embed, view=view)
+                view.message = await channel.send(embed=embed, files=files, view=view)
             except discord.HTTPException:
                 pass
 
@@ -608,9 +617,12 @@ class GuessCog(commands.Cog):
             wrong = embeds.error_embed(
                 f"Incorrectly guessed **`{hit.name}`**." + GUESS_TIP, title="Incorrect"
             )
-            if hit.logo and self.bot.holo:
-                wrong.set_thumbnail(url=self.bot.holo.image_url(hit.logo))
-            await message.reply(embed=wrong)
+            files: list[discord.File] = []
+            logo = await details.unsquished_bytes(self.bot, hit.logo, imaging.ASPECT_LOGO)
+            if logo:
+                files.append(discord.File(io.BytesIO(logo), "logo.png"))
+                wrong.set_thumbnail(url="attachment://logo.png")
+            await message.reply(embed=wrong, files=files)
             await self._fail(message, data)
 
     # --- hints ---
@@ -630,14 +642,14 @@ class GuessCog(commands.Cog):
         self.rounds.pop(getattr(channel, "id", 0), None)
         if self.bot.user_data:
             await self.bot.user_data.add_guesses(ender_id, data["guessing"], "ragequit")
-        embed = self._reveal_embed(
+        embed, files = self._reveal_embed(
             data,
             title="Guess Ended",
             description=f"The answer was **{data['answerName']}**." + self._reveal_extras(data),
             color=discord.Color.red(),
         )
         view = _GuessResultView(self, data)
-        view.message = await channel.send(embed=embed, view=view)
+        view.message = await channel.send(embed=embed, files=files, view=view)
 
     async def _chat_end(self, message: discord.Message, data: dict) -> None:
         err = self._end_error(data, message.author.id)
