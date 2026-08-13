@@ -1,12 +1,13 @@
-"""upload app emojis from the holodori manual_assets api: `python -m scripts.upload_emojis`.
+"""sync app emojis from the holodori manual_assets api: `python -m scripts.upload_emojis`.
 
-fetches each manual_assets webp, converts to png (or gif for animated), (re)uploads it as an
-application emoji, and writes data/emojis.json. re-run whenever the source assets change.
+reuses any application emoji that already exists (by name) and only uploads the missing ones, then
+writes data/emojis.json. pass `--force` to re-upload (delete + recreate) every emoji.
 """
 
 import asyncio
 import io
 import json
+import sys
 
 import aiohttp
 import discord
@@ -30,22 +31,16 @@ def _to_discord_image(webp: bytes) -> bytes:
     return out.getvalue()
 
 
-async def _fetch_all(cfg) -> dict[str, bytes]:
-    base = cfg["holodori"]["api_url"].rstrip("/")
-    headers = {cfg["holodori"]["bypass_header"]: cfg["holodori"]["bypass_value"]}
-    images: dict[str, bytes] = {}
-    async with aiohttp.ClientSession(headers=headers) as sess:
-        for name, path in DEFS.items():
-            async with sess.get(f"{base}/manual_assets/{path}") as r:
-                r.raise_for_status()
-                images[name] = _to_discord_image(await r.read())
-    return images
+def _record(emoji: discord.Emoji) -> dict:
+    return {"id": emoji.id, "animated": emoji.animated, "mention": str(emoji)}
 
 
 async def _main() -> None:
     set_config_path("config.yml")
     cfg = get_config()
-    images = await _fetch_all(cfg)
+    force = "--force" in sys.argv
+    base = cfg["holodori"]["api_url"].rstrip("/")
+    headers = {cfg["holodori"]["bypass_header"]: cfg["holodori"]["bypass_value"]}
 
     client = discord.Client(intents=discord.Intents.none())
     result: dict[str, dict] = {}
@@ -54,16 +49,21 @@ async def _main() -> None:
     async def on_ready() -> None:
         try:
             existing = {e.name: e for e in await client.fetch_application_emojis()}
-            for name, img in images.items():
-                if name in existing:
-                    await existing[name].delete()
-                emoji = await client.create_application_emoji(name=name, image=img)
-                result[name] = {
-                    "id": emoji.id,
-                    "animated": emoji.animated,
-                    "mention": str(emoji),
-                }
-                print(f"uploaded {name} -> {emoji}")
+            async with aiohttp.ClientSession(headers=headers) as sess:
+                for name, path in DEFS.items():
+                    emoji = existing.get(name)
+                    if emoji and not force:
+                        result[name] = _record(emoji)
+                        print(f"exists, reusing {name}")
+                        continue
+                    if emoji and force:
+                        await emoji.delete()
+                    async with sess.get(f"{base}/manual_assets/{path}") as r:
+                        r.raise_for_status()
+                        img = _to_discord_image(await r.read())
+                    emoji = await client.create_application_emoji(name=name, image=img)
+                    result[name] = _record(emoji)
+                    print(f"uploaded {name} -> {emoji}")
         finally:
             with open(EMOJIS_FILE, "w", encoding="utf-8") as f:
                 json.dump(result, f, indent=2)

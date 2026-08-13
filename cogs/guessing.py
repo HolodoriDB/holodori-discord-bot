@@ -187,7 +187,7 @@ class GuessCog(commands.Cog):
         r = self._base(mode, "song")
         r["answer"] = song.id
         r["answerName"] = song.title
-        r["reveal_thumb"] = self.bot.holo.image_url(song.jacket)
+        r["reveal_image"] = self.bot.holo.image_url(song.jacket)
         r["data"]["image"] = image
         return r
 
@@ -210,7 +210,7 @@ class GuessCog(commands.Cog):
             r["answerName"] = card.character
             r["holomem_id"] = card.characterId
             r["card_id"] = card.id
-            r["reveal_thumb"] = holo.image_url(card.thumb)
+            r["reveal_image"] = holo.image_url(card.thumb)
             r["data"].update(
                 {
                     "image": img,
@@ -243,7 +243,7 @@ class GuessCog(commands.Cog):
             r["answer"] = ev.eventId
             r["answerName"] = ev.name
             r["region"] = "us"
-            r["reveal_thumb"] = holo.image_url(ev.logo)
+            r["reveal_image"] = holo.image_url(ev.logo)
             r["data"]["image"] = img
             return r
         return None
@@ -313,8 +313,8 @@ class GuessCog(commands.Cog):
 
     def _reveal_embed(self, data: dict, *, title: str, description: str, color) -> discord.Embed:
         embed = embeds.embed(title=title, description=description, color=color)
-        if data.get("reveal_thumb"):
-            embed.set_thumbnail(url=data["reveal_thumb"])
+        if data.get("reveal_image"):
+            embed.set_image(url=data["reveal_image"])
         return embed
 
     async def _award(self, message: discord.Message, data: dict) -> None:
@@ -325,8 +325,8 @@ class GuessCog(commands.Cog):
         if self.bot.user_data:
             await self.bot.user_data.add_guesses(message.author.id, data["guessing"], "success")
         embed = embeds.success_embed(title="Correct", description=desc)
-        if data.get("reveal_thumb"):
-            embed.set_thumbnail(url=data["reveal_thumb"])
+        if data.get("reveal_image"):
+            embed.set_image(url=data["reveal_image"])
         view = _GuessResultView(self, data)
         view.message = await message.reply(embed=embed, view=view)
 
