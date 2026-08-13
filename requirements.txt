@@ -1,0 +1,23 @@
+# Discord
+discord.py
+
+# Database
+asyncpg
+
+# Config
+pyyaml
+
+# Network
+aiohttp
+
+# Data models
+pydantic
+
+# Images (guessing crops)
+pillow
+numpy
+
+# Audio clipping (/guess music) uses ffmpeg on PATH
+
+# Console colors
+colorama

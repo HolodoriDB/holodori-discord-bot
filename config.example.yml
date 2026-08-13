@@ -1,0 +1,31 @@
+discord:
+  name: "Holodori"              # display name in embeds/footers
+  token: ""                     # bot token
+  owner_ids: []                 # owner discord ids (dev commands + alias auth)
+  support_invite: ""            # support server invite url
+  support_id: 0                 # support server guild id
+  tos_url: ""                   # legal links shown in /help (blank = omitted)
+  privacy_url: ""
+  donate_url: "https://ko-fi.com/uselessyum"
+
+holodori:
+  api_url: "https://api.holodori.best"
+  # cloudflare origin-guard bypass for api.holodori.best (403 without it). the extracted-asset
+  # cdn is public and needs no header.
+  bypass_header: "x-six-seven"
+  bypass_value: ""
+  lang: "eng"                   # default display language: eng/jpn/kor/cht/chs/ind
+  regions: ["us", "as", "jp"]   # event server regions
+  refresh_interval: 300         # seconds between data refreshes
+
+guessing:
+  enabled: true                 # false unloads the guessing cog
+
+psql:
+  host: "127.0.0.1"
+  user: "holodori_bot"
+  database: "holodori_bot"
+  port: 5432
+  password: ""
+  pool_min_size: 3
+  pool_max_size: 10
