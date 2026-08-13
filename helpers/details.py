@@ -68,7 +68,7 @@ async def card_embed(bot: HolodoriBot, card: CardDetail) -> tuple[discord.Embed,
     stat = emojis.stat(card.mainStat)
     lines = [
         f"**Character:** {card.character}",
-        f"**Rarity:** {emojis.rarity(card.rarity, card.animated)}",
+        f"**Rarity:** {emojis.rarity(card.rarity)}",
         f"**Attribute:** {(attr + ' ') if attr else ''}{card.attributeName or '—'}",
         f"**Main Stat:** {(stat + ' ') if stat else ''}{(card.mainStat or '—').title()}",
         f"**Group:** {card.group.name if card.group else '—'}",
