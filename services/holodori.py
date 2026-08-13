@@ -25,6 +25,24 @@ from helpers import unblock
 
 __all__ = ["HolodoriClient", "HolodoriError", "HolodoriNotFound"]
 
+_LANGS = {"eng", "jpn", "kor", "cht", "chs", "ind"}
+
+
+def _resolve_langs(obj: Any, lang: str) -> Any:
+    """collapse any {eng,jpn,...} lang-map to the requested language's string; recurse otherwise.
+
+    some detail endpoints return raw masterdata where localized fields are still per-language dicts.
+    """
+    if isinstance(obj, dict):
+        if not obj:
+            return None  # empty lang-map / empty object -> no value
+        if all(k in _LANGS for k in obj):
+            return obj.get(lang) or obj.get("eng") or next(iter(obj.values()))
+        return {k: _resolve_langs(v, lang) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_resolve_langs(v, lang) for v in obj]
+    return obj
+
 
 class HolodoriError(Exception):
     def __init__(self, status: int, detail: Any = "") -> None:
@@ -133,9 +151,9 @@ class HolodoriClient:
         )
 
     async def get_card(self, card_id: str, lang: str | None = None) -> CardDetail:
-        return CardDetail.model_validate(
-            await self._get(f"/api/cards/{card_id}", lang=lang or self.lang)
-        )
+        lang = lang or self.lang
+        raw = await self._get(f"/api/cards/{card_id}", lang=lang)
+        return CardDetail.model_validate(_resolve_langs(raw, lang))
 
     # --- songs ---
 
@@ -146,9 +164,9 @@ class HolodoriClient:
         )
 
     async def get_song(self, music_id: str, lang: str | None = None) -> SongDetail:
-        return SongDetail.model_validate(
-            await self._get(f"/api/songs/{music_id}", lang=lang or self.lang)
-        )
+        lang = lang or self.lang
+        raw = await self._get(f"/api/songs/{music_id}", lang=lang)
+        return SongDetail.model_validate(_resolve_langs(raw, lang))
 
     async def get_song_audio(self, music_id: str) -> bytes:
         return await self._get_bytes(f"/api/songs/{quote(music_id)}/audio")

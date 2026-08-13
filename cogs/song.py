@@ -1,26 +1,23 @@
 from __future__ import annotations
 
+import asyncio
+import io
 from typing import TYPE_CHECKING
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 
-from helpers import embeds
+from helpers import details, embeds, imaging
 from helpers.autocompletes import autocompletes
-from helpers.views import Paginator
+from helpers.views import LinkButtonView, Paginator
 from services.holodori import HolodoriError, HolodoriNotFound
 
 if TYPE_CHECKING:
     from main import HolodoriBot
 
-_DIFF_ORDER = ["easy", "normal", "hard", "expert"]
-
-
-def _fmt_length(seconds: int | None) -> str:
-    if not seconds:
-        return "—"
-    return f"{seconds // 60}:{seconds % 60:02d}"
+_DIFFS = ["easy", "normal", "hard", "expert"]
+_DIFF_CHOICES = [app_commands.Choice(name=d.title(), value=d) for d in _DIFFS]
 
 
 class SongCog(commands.Cog):
@@ -40,7 +37,7 @@ class SongCog(commands.Cog):
         assert self.bot.user_data
         return await self.bot.user_data.get_settings(user_id, "default_language")
 
-    @song.command(name="jacket", description="Show a song's jacket art.")
+    @song.command(name="jacket", description="View a song's jacket.")
     @app_commands.describe(song="Song title.")
     @app_commands.autocomplete(song=autocompletes.song())
     async def jacket(self, interaction: discord.Interaction, song: str) -> None:
@@ -58,15 +55,59 @@ class SongCog(commands.Cog):
             embed.set_image(url=art)
         await interaction.followup.send(embed=embed)
 
-    @song.command(name="info", description="View a song's details and charts.")
+    @song.command(name="chart", description="View a song's chart.")
+    @app_commands.describe(
+        song="Song title.",
+        difficulty="Chart difficulty (defaults to your setting).",
+        mirror="Show the mirrored chart (defaults to your setting).",
+    )
+    @app_commands.autocomplete(song=autocompletes.song())
+    @app_commands.choices(difficulty=_DIFF_CHOICES)
+    async def chart(
+        self,
+        interaction: discord.Interaction,
+        song: str,
+        difficulty: str | None = None,
+        mirror: bool | None = None,
+    ) -> None:
+        await interaction.response.defer(thinking=True)
+        assert self.bot.holo and self.bot.data and self.bot.user_data
+        s = self.bot.data.get_song(song)
+        if not s:
+            await interaction.followup.send(
+                embed=embeds.error_embed("Couldn't find that song. Pick one from the list.")
+            )
+            return
+        if not difficulty:
+            difficulty = await self.bot.user_data.get_settings(interaction.user.id, "default_difficulty")
+        if mirror is None:
+            mirror = await self.bot.user_data.get_settings(interaction.user.id, "mirror_charts_by_default")
+        url = self.bot.holo.chart_image_url(s.id, difficulty)
+        embed = embeds.embed(title=s.title, description=f"**Difficulty:** {difficulty.title()}")
+        try:
+            chart_bytes = await self.bot.holo.fetch_bytes(url)
+        except Exception:
+            embed.description = f"**{difficulty.title()}** doesn't exist for this song."
+            embed.color = discord.Color.red()
+            await interaction.followup.send(embed=embed)
+            return
+        if mirror:
+            chart_bytes = await asyncio.to_thread(imaging.mirror, chart_bytes)
+            embed.description += "\n\n**MIRRORED CHART**"
+        embed.set_image(url="attachment://chart.png")
+        view = LinkButtonView([("Chart Image", url)])
+        view.message = await interaction.followup.send(
+            embed=embed, file=discord.File(io.BytesIO(chart_bytes), "chart.png"), view=view, wait=True
+        )
+
+    @song.command(name="info", description="View a song's data.")
     @app_commands.describe(song="Song title.")
     @app_commands.autocomplete(song=autocompletes.song())
     async def info(self, interaction: discord.Interaction, song: str) -> None:
         await interaction.response.defer(thinking=True)
-        assert self.bot.holo and self.bot.data
-        lang = await self._lang(interaction.user.id)
+        assert self.bot.holo
         try:
-            detail = await self.bot.holo.get_song(song, lang)
+            detail = await self.bot.holo.get_song(song, await self._lang(interaction.user.id))
         except HolodoriNotFound:
             await interaction.followup.send(
                 embed=embeds.error_embed("Couldn't find that song. Pick one from the list.")
@@ -77,81 +118,43 @@ class SongCog(commands.Cog):
                 embed=embeds.error_embed(f"Couldn't fetch song: {e.detail or e.status}")
             )
             return
+        await interaction.followup.send(embed=details.song_embed(self.bot, detail))
 
-        summary = self.bot.data.get_song(song)
-        lines = []
-        if detail.composer:
-            lines.append(f"**Composer:** {detail.composer}")
-        if detail.lyricist:
-            lines.append(f"**Lyricist:** {detail.lyricist}")
-        if detail.arranger:
-            lines.append(f"**Arranger:** {detail.arranger}")
-        if detail.characterGroupDisplayName:
-            lines.append(f"**Singers:** {detail.characterGroupDisplayName}")
-        lines.append(f"**Length:** {_fmt_length(detail.playingSeconds)}")
-        if detail.obtain and detail.obtain.get("type"):
-            lines.append(f"**Obtain:** {detail.obtain['type'].title()}")
-
-        embed = embeds.embed(title=detail.title, description="\n".join(lines))
-        # charts: level + note count per difficulty
-        chart_lines = []
-        for d in sorted(detail.difficulties, key=lambda x: _diff_key(x.difficultyType)):
-            tname = _diff_type(d.difficultyType).title()
-            notes = f" · {d.fullComboNoteCount} notes" if d.fullComboNoteCount else ""
-            chart_lines.append(f"**{tname}** Lv.{d.difficultyLevel}{notes}")
-        if chart_lines:
-            embed.add_field(name="Charts", value="\n".join(chart_lines), inline=False)
-        if summary and summary.jacket:
-            embed.set_thumbnail(url=self.bot.holo.image_url(summary.jacket))
-        embed.set_footer(text=f"ID: {detail.id}")
-        await interaction.followup.send(embed=embed)
-
-    @song.command(name="difficulty", description="List songs by a chart level.")
-    @app_commands.describe(level="Chart level.", difficulty="Difficulty tier.")
-    @app_commands.autocomplete(difficulty=autocompletes.choices(_DIFF_ORDER))
+    @song.command(name="difficulty", description="Find all songs of a level.")
+    @app_commands.describe(level="Level to search.", difficulty="Difficulty tier.")
+    @app_commands.choices(difficulty=_DIFF_CHOICES)
     async def difficulty(
         self, interaction: discord.Interaction, level: int, difficulty: str = "expert"
     ) -> None:
         await interaction.response.defer(thinking=True)
         assert self.bot.data
-        difficulty = difficulty.lower().strip()
-        matches = []
-        for s in self.bot.data.songs():
-            for d in s.difficulties:
-                if d.type == difficulty and d.level == level:
-                    matches.append(s.title)
+        matches = sorted(
+            s.title
+            for s in self.bot.data.songs()
+            if any(d.type == difficulty and d.level == level for d in s.difficulties)
+        )
         if not matches:
             await interaction.followup.send(
-                embed=embeds.error_embed(f"No **{difficulty}** charts at level {level}.")
+                embed=embeds.error_embed(f"No **{difficulty.title()}** charts at level {level}.")
             )
             return
-        matches.sort()
         per_page = 20
         pages = [matches[i : i + per_page] for i in range(0, len(matches), per_page)]
 
         def render(page: int) -> discord.Embed:
-            chunk = pages[page - 1]
-            return embeds.embed(
-                title=f"{difficulty.title()} · Level {level}",
-                description="\n".join(f"• {t}" for t in chunk),
-            ).set_footer(text=f"{len(matches)} songs · page {page}/{len(pages)}")
+            embed = embeds.embed(
+                title=f"{difficulty.title()} - Level {level}",
+                description="\n".join(f"• {t}" for t in pages[page - 1]),
+                color=discord.Color.blue(),
+            )
+            embed.set_footer(text=f"{len(matches)} songs - page {page}/{len(pages)}")
+            return embed
 
         if len(pages) == 1:
             await interaction.followup.send(embed=render(1))
             return
         view = Paginator(render, len(pages), interaction.user.id)
-        await interaction.followup.send(embed=render(1), view=view)
-        view.message = await interaction.original_response()
-
-
-def _diff_type(difficulty_type: str) -> str:
-    # "MusicDifficultyType_MUSIC_DIFFICULTY_TYPE_EASY" -> "easy"
-    return difficulty_type.rsplit("_", 1)[-1].lower()
-
-
-def _diff_key(difficulty_type: str) -> int:
-    t = _diff_type(difficulty_type)
-    return _DIFF_ORDER.index(t) if t in _DIFF_ORDER else 99
+        view.message = await interaction.followup.send(embed=render(1), view=view, wait=True)
 
 
 async def setup(bot: HolodoriBot) -> None:

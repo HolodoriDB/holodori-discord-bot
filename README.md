@@ -25,7 +25,10 @@ Ported from the sbuga-bot (Project Sekai) architecture.
    connection. The `holodori.bypass_value` is required — `api.holodori.best` returns 403 without
    the `x-six-seven` header.
 3. Create the schema: `python -m scripts.database_setup`
-4. Run: `python main.py`
+4. Upload app emojis (rarity stars, attribute/stat icons — fetched from the holodori
+   `manual_assets` API, converted, and uploaded to your application): `python -m scripts.upload_emojis`.
+   Re-run when the source icons change. Until this runs, rarity falls back to `★` text.
+5. Run: `python main.py`
 
 `/guess music` needs `ffmpeg` on PATH; without it that one mode is unavailable.
 

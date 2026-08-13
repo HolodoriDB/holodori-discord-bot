@@ -7,15 +7,14 @@ from discord import app_commands
 from discord.ext import commands
 
 from data.models import EventInfo
-from helpers import embeds
-from helpers.autocompletes import REGIONS, autocompletes
+from helpers import details, embeds
+from helpers.autocompletes import REGION_LABELS, REGIONS, autocompletes
 from services.holodori import HolodoriError
 
 if TYPE_CHECKING:
     from main import HolodoriBot
 
-_REGION_LABELS = {"us": "Global", "as": "Asia", "jp": "Japan"}
-_REGION_CHOICES = [app_commands.Choice(name=_REGION_LABELS[r], value=r) for r in REGIONS]
+_REGION_CHOICES = [app_commands.Choice(name=REGION_LABELS[r], value=r) for r in REGIONS]
 
 
 def _ts(ms: int | None, style: str = "F") -> str:
@@ -43,24 +42,6 @@ class EventsCog(commands.Cog):
         assert self.bot.data
         return await self.bot.data.events(region, await self._lang(user_id))
 
-    def _info_embed(self, ev: EventInfo) -> discord.Embed:
-        assert self.bot.holo
-        status = "🟢 Live" if ev.live else "⚫ Ended"
-        lines = [
-            f"**Status:** {status}",
-            f"**Type:** {'Song Score' if ev.isSongScore else 'Marathon'}",
-            f"**Starts:** {_ts(ev.startTime)}",
-            f"**Ends:** {_ts(ev.endTime)}",
-            f"**Results:** {_ts(ev.revealStartTime)}",
-        ]
-        embed = embeds.embed(title=ev.name, description="\n".join(lines))
-        if ev.logo:
-            embed.set_thumbnail(url=self.bot.holo.image_url(ev.logo))
-        if ev.banner:
-            embed.set_image(url=self.bot.holo.image_url(ev.banner))
-        embed.set_footer(text=f"ID: {ev.eventId}")
-        return embed
-
     @event.command(name="info", description="View an event's details.")
     @app_commands.describe(region="Game server region.", event="Event (defaults to the latest).")
     @app_commands.choices(region=_REGION_CHOICES)
@@ -83,7 +64,8 @@ class EventsCog(commands.Cog):
             await interaction.followup.send(embed=embeds.error_embed("No events found."))
             return
         ev = next((e for e in events if e.eventId == event), events[0]) if event else events[0]
-        await interaction.followup.send(embed=self._info_embed(ev))
+        embed, files = await details.event_embed(self.bot, ev)
+        await interaction.followup.send(embed=embed, files=files)
 
     @event.command(name="schedule", description="Current and upcoming events.")
     @app_commands.describe(region="Game server region.")
@@ -100,12 +82,13 @@ class EventsCog(commands.Cog):
         if not events:
             await interaction.followup.send(embed=embeds.error_embed("No events found."))
             return
-        embed = embeds.embed(title=f"{_REGION_LABELS.get(region, region)} Event Schedule")
+        embed = embeds.embed(title=f"{REGION_LABELS.get(region, region)} Event Schedule")
         for ev in events[:8]:
-            status = "🟢" if ev.live else "⚫"
+            marker = "⚫" if details.event_ended(ev) else "🟢"
+            end = _ts(ev.endTime, "d") if ev.endTime else "No end date"
             embed.add_field(
-                name=f"{status} {ev.name}",
-                value=f"{_ts(ev.startTime, 'd')} → {_ts(ev.endTime, 'd')}",
+                name=f"{marker} {ev.name}",
+                value=f"{_ts(ev.startTime, 'd')} → {end}",
                 inline=False,
             )
         await interaction.followup.send(embed=embed)
@@ -120,6 +103,8 @@ class EventsCog(commands.Cog):
         region: str = "us",
         event: str | None = None,
     ) -> None:
+        from helpers.lb_view import LeaderboardView
+
         await interaction.response.defer(thinking=True)
         assert self.bot.holo
         try:
@@ -137,27 +122,12 @@ class EventsCog(commands.Cog):
                 embed=embeds.error_embed("No ranking data for that event yet.")
             )
             return
-        lines = [
-            f"**#{r['rank']}** {discord.utils.escape_markdown(str(r.get('name', '?')))} — "
-            f"{int(r.get('score', 0)):,}"
-            for r in rankings[:20]
-        ]
-        embed = embeds.embed(
-            title=f"{data.get('eventName', 'Event')} · {_REGION_LABELS.get(region, region)}",
-            description="\n".join(lines),
+        title = f"{data.get('eventName', 'Event')} - {REGION_LABELS.get(region, region)}"
+        thumb = self.bot.holo.image_url(data["logo"]) if data.get("logo") else None
+        view = LeaderboardView(
+            rows=rankings, title=title, thumb=thumb, restrict_to=interaction.user.id
         )
-        borders = data.get("borders", [])
-        if borders:
-            embed.add_field(
-                name="Borders",
-                value="\n".join(
-                    f"T{b['rank']}: {int(b.get('score', 0)):,}" for b in borders[:10]
-                ),
-                inline=False,
-            )
-        if data.get("logo"):
-            embed.set_thumbnail(url=self.bot.holo.image_url(data["logo"]))
-        await interaction.followup.send(embed=embed)
+        await view.send_initial(interaction)
 
 
 async def setup(bot: HolodoriBot) -> None:

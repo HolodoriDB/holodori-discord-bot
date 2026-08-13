@@ -1,0 +1,47 @@
+{
+  "rarity_star": {
+    "id": 1537507002291462285,
+    "animated": false,
+    "mention": "<:rarity_star:1537507002291462285>"
+  },
+  "rarity_star_animated": {
+    "id": 1537507003264663683,
+    "animated": true,
+    "mention": "<a:rarity_star_animated:1537507003264663683>"
+  },
+  "attr_cute": {
+    "id": 1537507004170379395,
+    "animated": false,
+    "mention": "<:attr_cute:1537507004170379395>"
+  },
+  "attr_pure": {
+    "id": 1537507005118550067,
+    "animated": false,
+    "mention": "<:attr_pure:1537507005118550067>"
+  },
+  "attr_happy": {
+    "id": 1537507005810614424,
+    "animated": false,
+    "mention": "<:attr_happy:1537507005810614424>"
+  },
+  "stat_performance": {
+    "id": 1537507006766780418,
+    "animated": false,
+    "mention": "<:stat_performance:1537507006766780418>"
+  },
+  "stat_sense": {
+    "id": 1537507007794516138,
+    "animated": false,
+    "mention": "<:stat_sense:1537507007794516138>"
+  },
+  "stat_technique": {
+    "id": 1537507008453017661,
+    "animated": false,
+    "mention": "<:stat_technique:1537507008453017661>"
+  },
+  "bloom": {
+    "id": 1537507009480359967,
+    "animated": false,
+    "mention": "<:bloom:1537507009480359967>"
+  }
+}

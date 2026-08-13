@@ -6,9 +6,10 @@ import asyncpg
 SETTING_DEFAULTS: dict[str, Any] = {
     "default_language": "eng",  # eng/jpn/kor/cht/chs/ind
     "default_region": "us",  # event region us/as/jp
+    "default_difficulty": "expert",  # easy/normal/hard/expert
+    "mirror_charts_by_default": False,
     "timezone": "et",
     "first_time_guess_end": True,
-    "opt_out_rolling_guess_leaderboards": False,
 }
 
 GUESS_DEFAULT = {"fail": 0, "success": 0, "ragequit": 0, "hint": 0}

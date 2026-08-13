@@ -14,6 +14,7 @@ AutocompleteCb = Callable[
 
 LANGUAGES = ["eng", "jpn", "kor", "cht", "chs", "ind"]
 REGIONS = ["us", "as", "jp"]
+REGION_LABELS = {"us": "US", "as": "Asia", "jp": "Japan"}
 
 
 class Autocompletes:

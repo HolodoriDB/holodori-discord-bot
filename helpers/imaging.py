@@ -16,6 +16,24 @@ def _out(img: Image.Image) -> bytes:
     return buf.getvalue()
 
 
+# true display aspect (w/h) per squished-into-pot asset; see the frontend CardMedia/presetImage
+ASPECT_FULL = 16 / 9  # card full art (2048x1024)
+ASPECT_LOGO = 16 / 10  # event logo (1024x512)
+ASPECT_BANNER = 16 / 9  # event banner (2048x1024)
+
+
+def unsquish(data: bytes, aspect: float) -> bytes:
+    """shrink the over-long axis of a squished pot texture to its true aspect (no upscale)."""
+    img = Image.open(io.BytesIO(data)).convert("RGBA")
+    w, h = img.size
+    src = w / h
+    if src > aspect:
+        img = img.resize((max(1, round(h * aspect)), h), Image.Resampling.LANCZOS)
+    elif src < aspect:
+        img = img.resize((w, max(1, round(w / aspect))), Image.Resampling.LANCZOS)
+    return _out(img)
+
+
 def crop_square(
     data: bytes, *, frac: float = 0.42, grayscale: bool = False, seed: int | None = None
 ) -> bytes:
@@ -36,6 +54,10 @@ def crop_square(
 def pixelate(data: bytes, *, px: int = 30, out: int = 320) -> bytes:
     img = _open(data).resize((px, px), Image.Resampling.BILINEAR)
     return _out(img.resize((out, out), Image.Resampling.NEAREST))
+
+
+def mirror(data: bytes) -> bytes:
+    return _out(_open(data).transpose(Image.Transpose.FLIP_LEFT_RIGHT))
 
 
 def crop_chart_strip(data: bytes, *, frac: float = 0.16, seed: int | None = None) -> bytes:

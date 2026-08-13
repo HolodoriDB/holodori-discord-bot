@@ -21,7 +21,8 @@ _LANG_LABELS = {
     "chs": "简体中文",
     "ind": "Indonesia",
 }
-_REGION_LABELS = {"us": "Global (US)", "as": "Asia", "jp": "Japan"}
+_REGION_LABELS = {"us": "US", "as": "Asia", "jp": "Japan"}
+_DIFFS = ["easy", "normal", "hard", "expert"]
 
 
 class _SettingsView(HoloView):
@@ -58,8 +59,26 @@ class _SettingsView(HoloView):
             ],
         )
         region.callback = self._on_region  # type: ignore[assignment]
+        difficulty = discord.ui.Select(
+            placeholder="Default chart difficulty",
+            options=[
+                discord.SelectOption(
+                    label=d.title(), value=d, default=d == self.settings["default_difficulty"]
+                )
+                for d in _DIFFS
+            ],
+        )
+        difficulty.callback = self._on_diff  # type: ignore[assignment]
+        mirror_on = self.settings["mirror_charts_by_default"]
+        mirror = discord.ui.Button(
+            label=f"Mirror Charts: {'On' if mirror_on else 'Off'}",
+            style=discord.ButtonStyle.success if mirror_on else discord.ButtonStyle.secondary,
+        )
+        mirror.callback = self._on_mirror  # type: ignore[assignment]
         self.add_item(lang)
         self.add_item(region)
+        self.add_item(difficulty)
+        self.add_item(mirror)
 
     def _embed(self) -> discord.Embed:
         s = self.settings
@@ -68,6 +87,8 @@ class _SettingsView(HoloView):
             description=(
                 f"**Language:** {_LANG_LABELS.get(s['default_language'], s['default_language'])}\n"
                 f"**Event region:** {_REGION_LABELS.get(s['default_region'], s['default_region'])}\n"
+                f"**Chart difficulty:** {s['default_difficulty'].title()}\n"
+                f"**Mirror charts:** {'On' if s['mirror_charts_by_default'] else 'Off'}\n"
                 f"**Timezone:** `{s['timezone']}` (change with `/user timezone`)"
             ),
         )
@@ -83,6 +104,14 @@ class _SettingsView(HoloView):
 
     async def _on_region(self, interaction: discord.Interaction) -> None:
         await self._save(interaction, "default_region", interaction.data["values"][0])  # type: ignore[index]
+
+    async def _on_diff(self, interaction: discord.Interaction) -> None:
+        await self._save(interaction, "default_difficulty", interaction.data["values"][0])  # type: ignore[index]
+
+    async def _on_mirror(self, interaction: discord.Interaction) -> None:
+        await self._save(
+            interaction, "mirror_charts_by_default", not self.settings["mirror_charts_by_default"]
+        )
 
 
 class UserCog(commands.Cog):

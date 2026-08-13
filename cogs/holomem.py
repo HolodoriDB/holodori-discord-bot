@@ -6,25 +6,15 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from data.models import HolomemGroup, HolomemMember
-from helpers import embeds
-from helpers.autocompletes import REGIONS, autocompletes
+from helpers import details, embeds
+from helpers.autocompletes import REGION_LABELS, REGIONS, autocompletes
+from helpers.lb_view import LeaderboardView
 from services.holodori import HolodoriError
 
 if TYPE_CHECKING:
     from main import HolodoriBot
 
-_REGION_LABELS = {"us": "Global", "as": "Asia", "jp": "Japan"}
-
-
-def _find_member(
-    groups: list[HolomemGroup], holomem_id: str
-) -> tuple[HolomemGroup, HolomemMember] | None:
-    for g in groups:
-        for m in g.members:
-            if m.id == holomem_id:
-                return g, m
-    return None
+_REGION_CHOICES = [app_commands.Choice(name=REGION_LABELS[r], value=r) for r in REGIONS]
 
 
 class HolomemCog(commands.Cog):
@@ -40,17 +30,12 @@ class HolomemCog(commands.Cog):
         ),
     )
 
-    async def _lang(self, user_id: int) -> str:
-        assert self.bot.user_data
-        return await self.bot.user_data.get_settings(user_id, "default_language")
-
     @holomem.command(name="list", description="List all holomems by branch.")
     async def list_(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(thinking=True)
         assert self.bot.data
-        groups = self.bot.data.holomem_groups()
         embed = embeds.embed(title="Holomems")
-        for g in groups:
+        for g in self.bot.data.holomem_groups():
             names = ", ".join(m.name for m in g.members)
             embed.add_field(name=g.name, value=names[:1024] or "—", inline=False)
         await interaction.followup.send(embed=embed)
@@ -60,38 +45,21 @@ class HolomemCog(commands.Cog):
     @app_commands.autocomplete(holomem=autocompletes.holomem())
     async def info(self, interaction: discord.Interaction, holomem: str) -> None:
         await interaction.response.defer(thinking=True)
-        assert self.bot.data and self.bot.holo
-        groups = self.bot.data.holomem_groups()
-        found = _find_member(groups, holomem)
+        assert self.bot.data
+        found = details.find_member(self.bot.data.holomem_groups(), holomem)
         if not found:
             await interaction.followup.send(
                 embed=embeds.error_embed("Couldn't find that holomem. Pick one from the list.")
             )
             return
-        group, member = found
-        lines = [f"**Branch:** {group.name}"]
-        if member.stickers:
-            lines.append(f"**Membership Stickers:** {len(member.stickers)}")
-        embed = embeds.embed(title=member.name, description="\n".join(lines))
-        icon = self.bot.holo.image_url(member.icon)
-        if icon:
-            embed.set_thumbnail(url=icon)
-        if member.stickers and member.stickers[0].image:
-            embed.set_image(url=self.bot.holo.image_url(member.stickers[0].image))
-        embed.set_footer(text=f"ID: {member.id}")
-        await interaction.followup.send(embed=embed)
+        await interaction.followup.send(embed=details.holomem_embed(self.bot, *found))
 
     @holomem.command(name="leaderboard", description="Live per-holomem rating rank.")
     @app_commands.describe(holomem="Holomem name.", region="Game server region.")
     @app_commands.autocomplete(holomem=autocompletes.holomem())
-    @app_commands.choices(
-        region=[app_commands.Choice(name=_REGION_LABELS[r], value=r) for r in REGIONS]
-    )
+    @app_commands.choices(region=_REGION_CHOICES)
     async def leaderboard(
-        self,
-        interaction: discord.Interaction,
-        holomem: str,
-        region: str = "us",
+        self, interaction: discord.Interaction, holomem: str, region: str = "us"
     ) -> None:
         await interaction.response.defer(thinking=True)
         assert self.bot.data and self.bot.holo
@@ -109,18 +77,11 @@ class HolomemCog(commands.Cog):
                 embed=embeds.error_embed("No leaderboard data for that holomem right now.")
             )
             return
-        lines = [
-            f"**#{r['rank']}** {discord.utils.escape_markdown(str(r.get('name', '?')))} — "
-            f"{int(r.get('score', 0)):,}"
-            for r in rows[:20]
-        ]
-        title = f"{member.name if member else holomem} · {_REGION_LABELS.get(region, region)} Rating"
-        embed = embeds.embed(title=title, description="\n".join(lines))
-        if member:
-            icon = self.bot.holo.image_url(member.icon)
-            if icon:
-                embed.set_thumbnail(url=icon)
-        await interaction.followup.send(embed=embed)
+        name = member.name if member else holomem
+        title = f"{name} - {REGION_LABELS.get(region, region)} Rating"
+        thumb = self.bot.holo.image_url(member.icon) if member and member.icon else None
+        view = LeaderboardView(rows=rows, title=title, thumb=thumb, restrict_to=interaction.user.id)
+        await view.send_initial(interaction)
 
 
 async def setup(bot: HolodoriBot) -> None:

@@ -14,6 +14,7 @@ from helpers import embeds, unblock
 from helpers.autocompletes import Autocompletes, autocompletes
 from helpers.cache import CACHE
 from helpers.config_loader import Config, get_config, set_config_path
+from helpers.emojis import emojis
 from helpers.logging import LOGGING
 from services.holodori import HolodoriClient
 
@@ -59,6 +60,11 @@ class HolodoriBot(commands.Bot):
         self.data = data
         self.autocompletes.holodori = data
         await data.start()
+
+        try:
+            await emojis.load(self)
+        except Exception as e:
+            self.warn(f"emoji load failed: {e}")
 
         await self._load_cogs()
 
