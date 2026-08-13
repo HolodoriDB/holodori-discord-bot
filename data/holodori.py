@@ -9,8 +9,8 @@ import asyncio
 import json
 import os
 import time
-from typing import Iterable
 
+from data import search
 from data.models import Card, EventInfo, Holomem, HolomemGroup, Song
 from helpers.logging import LOGGING
 from services.holodori import HolodoriClient
@@ -173,29 +173,22 @@ class HolodoriData:
         self._events_cache[key] = (now, evs)
         return evs
 
-    # --- plain substring search (autocomplete) ---
+    # --- fuzzy search (autocomplete) + single-answer resolution ---
 
     def search_cards(self, query: str, limit: int = 25) -> list[Card]:
-        return _rank(self._cards, query, lambda c: (c.name, c.character, c.id), limit)
+        return search.rank(query, self._cards, lambda c: (c.name, c.character, c.id), limit)
 
     def search_songs(self, query: str, limit: int = 25) -> list[Song]:
-        return _rank(self._songs, query, lambda s: (s.title, s.id), limit)
+        return search.rank(query, self._songs, lambda s: (s.title, s.id), limit)
 
     def search_holomems(self, query: str, limit: int = 25) -> list[Holomem]:
-        return _rank(
-            self._holomems, query, lambda h: (h.name, h.shortName or "", h.id), limit
-        )
+        return search.rank(query, self._holomems, lambda h: (h.name, h.shortName, h.id), limit)
 
+    def match_song(self, query: str) -> Song | None:
+        return search.best_match(query, self._songs, lambda s: (s.title, s.id))
 
-def _rank(items, query, keys, limit):
-    q = query.lower().strip()
-    if not q:
-        return list(items)[:limit]
-    starts, contains = [], []
-    for it in items:
-        fields: Iterable[str] = [str(k).lower() for k in keys(it) if k]
-        if any(f.startswith(q) for f in fields):
-            starts.append(it)
-        elif any(q in f for f in fields):
-            contains.append(it)
-    return (starts + contains)[:limit]
+    def match_card(self, query: str) -> Card | None:
+        return search.best_match(query, self._cards, lambda c: (c.name, c.id))
+
+    def match_holomem(self, query: str) -> Holomem | None:
+        return search.best_match(query, self._holomems, lambda h: (h.name, h.shortName, h.id))

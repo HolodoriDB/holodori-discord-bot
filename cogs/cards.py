@@ -36,12 +36,18 @@ class CardsCog(commands.Cog):
     @app_commands.autocomplete(card=autocompletes.card())
     async def info(self, interaction: discord.Interaction, card: str) -> None:
         await interaction.response.defer(thinking=True)
-        assert self.bot.holo
+        assert self.bot.holo and self.bot.data
+        c = self.bot.data.match_card(card)
+        if not c:
+            await interaction.followup.send(
+                embed=embeds.error_embed(f"Couldn't find a card matching `{card}`.")
+            )
+            return
         try:
-            detail = await self.bot.holo.get_card(card, await self._lang(interaction.user.id))
+            detail = await self.bot.holo.get_card(c.id, await self._lang(interaction.user.id))
         except HolodoriNotFound:
             await interaction.followup.send(
-                embed=embeds.error_embed("Couldn't find that card. Pick one from the list.")
+                embed=embeds.error_embed(f"Couldn't find a card matching `{card}`.")
             )
             return
         except HolodoriError as e:

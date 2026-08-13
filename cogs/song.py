@@ -43,7 +43,7 @@ class SongCog(commands.Cog):
     async def jacket(self, interaction: discord.Interaction, song: str) -> None:
         await interaction.response.defer(thinking=True)
         assert self.bot.holo and self.bot.data
-        s = self.bot.data.get_song(song)
+        s = self.bot.data.match_song(song)
         if not s:
             await interaction.followup.send(
                 embed=embeds.error_embed("Couldn't find that song. Pick one from the list.")
@@ -72,7 +72,7 @@ class SongCog(commands.Cog):
     ) -> None:
         await interaction.response.defer(thinking=True)
         assert self.bot.holo and self.bot.data and self.bot.user_data
-        s = self.bot.data.get_song(song)
+        s = self.bot.data.match_song(song)
         if not s:
             await interaction.followup.send(
                 embed=embeds.error_embed("Couldn't find that song. Pick one from the list.")
@@ -105,12 +105,18 @@ class SongCog(commands.Cog):
     @app_commands.autocomplete(song=autocompletes.song())
     async def info(self, interaction: discord.Interaction, song: str) -> None:
         await interaction.response.defer(thinking=True)
-        assert self.bot.holo
+        assert self.bot.holo and self.bot.data
+        s = self.bot.data.match_song(song)
+        if not s:
+            await interaction.followup.send(
+                embed=embeds.error_embed(f"Couldn't find a song matching `{song}`.")
+            )
+            return
         try:
-            detail = await self.bot.holo.get_song(song, await self._lang(interaction.user.id))
+            detail = await self.bot.holo.get_song(s.id, await self._lang(interaction.user.id))
         except HolodoriNotFound:
             await interaction.followup.send(
-                embed=embeds.error_embed("Couldn't find that song. Pick one from the list.")
+                embed=embeds.error_embed(f"Couldn't find a song matching `{song}`.")
             )
             return
         except HolodoriError as e:
@@ -121,33 +127,34 @@ class SongCog(commands.Cog):
         await interaction.followup.send(embed=details.song_embed(self.bot, detail))
 
     @song.command(name="difficulty", description="Find all songs of a level.")
-    @app_commands.describe(level="Level to search.", difficulty="Difficulty tier.")
-    @app_commands.choices(difficulty=_DIFF_CHOICES)
-    async def difficulty(
-        self, interaction: discord.Interaction, level: int, difficulty: str = "expert"
-    ) -> None:
+    @app_commands.describe(level="Level to search (1-40).")
+    async def difficulty(self, interaction: discord.Interaction, level: int) -> None:
         await interaction.response.defer(thinking=True)
         assert self.bot.data
-        matches = sorted(
-            s.title
-            for s in self.bot.data.songs()
-            if any(d.type == difficulty and d.level == level for d in s.difficulties)
-        )
-        if not matches:
+        if not 1 <= level <= 40:
             await interaction.followup.send(
-                embed=embeds.error_embed(f"No **{difficulty.title()}** charts at level {level}.")
+                embed=embeds.error_embed("Level must be between 1 and 40.")
             )
             return
-        per_page = 20
-        pages = [matches[i : i + per_page] for i in range(0, len(matches), per_page)]
+        order = {d: i for i, d in enumerate(reversed(_DIFFS))}  # expert first
+        found: list[tuple[str, str]] = []
+        for s in self.bot.data.songs():
+            for d in s.difficulties:
+                if d.level == level:
+                    found.append((d.type, s.title))
+        if not found:
+            await interaction.followup.send(
+                embed=embeds.error_embed(f"No charts found at level {level}.")
+            )
+            return
+        found.sort(key=lambda x: (order.get(x[0], 99), x[1].lower()))
+        lines = [f"**{diff.title()}** - {title}" for diff, title in found]
+        per_page = 25
+        pages = [lines[i : i + per_page] for i in range(0, len(lines), per_page)]
 
         def render(page: int) -> discord.Embed:
-            embed = embeds.embed(
-                title=f"{difficulty.title()} - Level {level}",
-                description="\n".join(f"• {t}" for t in pages[page - 1]),
-                color=discord.Color.blue(),
-            )
-            embed.set_footer(text=f"{len(matches)} songs - page {page}/{len(pages)}")
+            embed = embeds.embed(title=f"Level {level} Songs", color=discord.Color.blue())
+            embed.description = "\n".join(pages[page - 1]) + f"\n\n-# Page {page}/{len(pages)}"
             return embed
 
         if len(pages) == 1:

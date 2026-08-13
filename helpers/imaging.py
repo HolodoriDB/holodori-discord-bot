@@ -35,25 +35,18 @@ def unsquish(data: bytes, aspect: float) -> bytes:
 
 
 def crop_square(
-    data: bytes, *, frac: float = 0.42, grayscale: bool = False, seed: int | None = None
+    data: bytes, *, size: int = 250, grayscale: bool = False, seed: int | None = None
 ) -> bytes:
+    # a random size x size window at native resolution, no upscaling (1:1 with sbuga _crop_square)
     img = _open(data)
-    w, h = img.size
-    side = max(8, int(min(w, h) * frac))
-    rng = random.Random(seed)
-    x = rng.randint(0, max(0, w - side))
-    y = rng.randint(0, max(0, h - side))
-    crop = img.crop((x, y, x + side, y + side))
     if grayscale:
-        crop = crop.convert("L").convert("RGB")
-    if side < 320:
-        crop = crop.resize((320, 320), Image.Resampling.LANCZOS)
-    return _out(crop)
-
-
-def pixelate(data: bytes, *, px: int = 30, out: int = 320) -> bytes:
-    img = _open(data).resize((px, px), Image.Resampling.BILINEAR)
-    return _out(img.resize((out, out), Image.Resampling.NEAREST))
+        img = img.convert("L")
+    w, h = img.size
+    s = min(size, w, h)
+    rng = random.Random(seed)
+    x = rng.randint(0, w - s)
+    y = rng.randint(0, h - s)
+    return _out(img.crop((x, y, x + s, y + s)))
 
 
 def mirror(data: bytes) -> bytes:

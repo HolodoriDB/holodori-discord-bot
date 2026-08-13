@@ -13,6 +13,9 @@ aiohttp
 # Data models
 pydantic
 
+# Fuzzy matching (song/holomem/event search + guess answers)
+rapidfuzz
+
 # Images (guessing crops)
 pillow
 numpy

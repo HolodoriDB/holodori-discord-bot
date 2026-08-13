@@ -144,11 +144,13 @@ def event_ended(ev: EventInfo) -> bool:
 async def event_embed(bot: HolodoriBot, ev: EventInfo) -> tuple[discord.Embed, list[discord.File]]:
     assert bot.holo
     status = "⚫ Ended" if event_ended(ev) else "🟢 Live"
+    ends = f"<t:{ev.endTime // 1000}:R>" if ev.endTime else "No end date"
     lines = [
-        f"**Status:** {status}",
         f"**Type:** {'Song Score' if ev.isSongScore else 'Marathon'}",
-        f"**Starts:** {f'<t:{ev.startTime // 1000}:F>' if ev.startTime else '—'}",
-        f"**Ends:** {f'<t:{ev.endTime // 1000}:F>' if ev.endTime else 'No end date'}",
+        f"**ID:** `{ev.eventId}`",
+        f"**Status:** {status}",
+        f"**Starts:** {f'<t:{ev.startTime // 1000}:R>' if ev.startTime else '—'}",
+        f"**Ends:** {ends}",
     ]
     embed = embeds.embed(title=ev.name, description="\n".join(lines))
     files: list[discord.File] = []
@@ -160,7 +162,6 @@ async def event_embed(bot: HolodoriBot, ev: EventInfo) -> tuple[discord.Embed, l
     if banner:
         files.append(banner)
         embed.set_image(url="attachment://banner.png")
-    embed.set_footer(text=f"ID: {ev.eventId}")
     return embed, files
 
 

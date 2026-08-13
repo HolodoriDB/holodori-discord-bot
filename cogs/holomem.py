@@ -7,14 +7,12 @@ from discord import app_commands
 from discord.ext import commands
 
 from helpers import details, embeds
-from helpers.autocompletes import REGION_LABELS, REGIONS, autocompletes
+from helpers.autocompletes import REGION_CHOICES, REGION_LABELS, autocompletes
 from helpers.lb_view import LeaderboardView
 from services.holodori import HolodoriError
 
 if TYPE_CHECKING:
     from main import HolodoriBot
-
-_REGION_CHOICES = [app_commands.Choice(name=REGION_LABELS[r], value=r) for r in REGIONS]
 
 
 class HolomemCog(commands.Cog):
@@ -46,10 +44,11 @@ class HolomemCog(commands.Cog):
     async def info(self, interaction: discord.Interaction, holomem: str) -> None:
         await interaction.response.defer(thinking=True)
         assert self.bot.data
-        found = details.find_member(self.bot.data.holomem_groups(), holomem)
+        member = self.bot.data.match_holomem(holomem)
+        found = details.find_member(self.bot.data.holomem_groups(), member.id) if member else None
         if not found:
             await interaction.followup.send(
-                embed=embeds.error_embed("Couldn't find that holomem. Pick one from the list.")
+                embed=embeds.error_embed(f"Couldn't find a holomem matching `{holomem}`.")
             )
             return
         await interaction.followup.send(embed=details.holomem_embed(self.bot, *found))
@@ -57,12 +56,14 @@ class HolomemCog(commands.Cog):
     @holomem.command(name="leaderboard", description="Live per-holomem rating rank.")
     @app_commands.describe(holomem="Holomem name.", region="Game server region.")
     @app_commands.autocomplete(holomem=autocompletes.holomem())
-    @app_commands.choices(region=_REGION_CHOICES)
+    @app_commands.choices(region=REGION_CHOICES)
     async def leaderboard(
-        self, interaction: discord.Interaction, holomem: str, region: str = "us"
+        self, interaction: discord.Interaction, holomem: str, region: str = "default"
     ) -> None:
         await interaction.response.defer(thinking=True)
-        assert self.bot.data and self.bot.holo
+        assert self.bot.data and self.bot.holo and self.bot.user_data
+        if region == "default":
+            region = await self.bot.user_data.get_settings(interaction.user.id, "default_region")
         member = self.bot.data.get_holomem(holomem)
         try:
             data = await self.bot.holo.get_holomem_leaderboard(region, holomem)

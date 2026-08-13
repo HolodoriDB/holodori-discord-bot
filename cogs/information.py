@@ -82,8 +82,8 @@ class InfoCog(commands.Cog):
             title=self.bot.user.name,
             description=(
                 "\n".join(links) + "\n\n"
-                f"-# {self.bot.user.mention} is an unofficial hololive Dreams bot. Data from "
-                "holodori.best. Not affiliated with COVER Corp."
+                "-# This is an unofficial, fan-made bot and is not affiliated with or endorsed by "
+                "QualiArts Inc., COVER Corp., hololive Dreams, or any hololive members."
             ),
         )
         await interaction.followup.send(embed=embed)

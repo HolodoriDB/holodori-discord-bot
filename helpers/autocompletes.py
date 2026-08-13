@@ -15,6 +15,10 @@ AutocompleteCb = Callable[
 LANGUAGES = ["eng", "jpn", "kor", "cht", "chs", "ind"]
 REGIONS = ["us", "as", "jp"]
 REGION_LABELS = {"us": "US", "as": "Asia", "jp": "Japan"}
+# includes a Default option that resolves to the user's default_region setting
+REGION_CHOICES = [app_commands.Choice(name="Default", value="default")] + [
+    app_commands.Choice(name=REGION_LABELS[r], value=r) for r in REGIONS
+]
 
 
 class Autocompletes:
