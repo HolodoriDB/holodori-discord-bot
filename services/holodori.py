@@ -222,6 +222,8 @@ class HolodoriClient:
         event_id: str | None = None,
         chapter_id: str | None = None,
         border: bool | None = None,
+        music: bool | None = None,
+        music_id: str | None = None,
     ) -> dict:
         return await self._get(
             "/api/events/graph",
@@ -230,6 +232,8 @@ class HolodoriClient:
             event_id=event_id,
             chapter_id=chapter_id,
             border=str(border).lower() if border is not None else None,
+            music=str(music).lower() if music is not None else None,
+            music_id=music_id,
         )
 
     # --- misc data ---

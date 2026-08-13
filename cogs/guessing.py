@@ -149,7 +149,7 @@ class GuessCog(commands.Cog):
                 raw = await self._fetch(holo.chart_image_url(s.id, diff))
                 if not raw:
                     continue
-                img = await asyncio.to_thread(imaging.crop_chart_strip, raw)
+                img = await asyncio.to_thread(imaging.crop_chart, raw)
                 return self._song_round(mode, s, image=img)
             return None
 
@@ -518,6 +518,8 @@ class GuessCog(commands.Cog):
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
         if message.author.bot or not message.content.startswith(GUESS_PREFIX):
+            return
+        if message.content.startswith("-#"):  # discord subheader markdown, not a guess
             return
         data = self.rounds.get(message.channel.id)
         if not data or not data.get("startTime"):

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import io
 from typing import TYPE_CHECKING
+from urllib.parse import quote
 
 import discord
 from discord import app_commands
@@ -92,10 +93,19 @@ class SongCog(commands.Cog):
             await interaction.followup.send(embed=embed)
             return
         if mirror:
-            chart_bytes = await asyncio.to_thread(imaging.mirror, chart_bytes)
+            chart_bytes = await asyncio.to_thread(imaging.mirror_chart, chart_bytes)
             embed.description += "\n\n**MIRRORED CHART**"
         embed.set_image(url="attachment://chart.png")
-        view = LinkButtonView([("Chart Image", url)])
+        # cdn always has the un-mirrored chart; the api route mirrors on demand (browser can solve
+        # any cloudflare challenge itself, so the link needs no bypass header)
+        if mirror:
+            button_url = (
+                f"{self.bot.holo.base}/api/chart?music_id={quote(s.id)}"
+                f"&difficulty={difficulty}&mirror=1"
+            )
+        else:
+            button_url = url
+        view = LinkButtonView([("Chart Image", button_url)])
         view.message = await interaction.followup.send(
             embed=embed, file=discord.File(io.BytesIO(chart_bytes), "chart.png"), view=view, wait=True
         )
