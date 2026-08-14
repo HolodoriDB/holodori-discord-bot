@@ -91,6 +91,8 @@ class HolodoriData:
     ) -> None:
         self._cards = sorted(cards, key=lambda c: c.order)
         self._cards_by_id = {c.id: c for c in cards}
+        # m9999 is a placeholder song, never user-facing - drop it everywhere (search, matching, lists)
+        songs = [s for s in songs if s.id != "m9999"]
         self._songs = sorted(songs, key=lambda s: (s.startTime or 0))
         self._songs_by_id = {s.id: s for s in songs}
         self._holomems = sorted(holomems, key=lambda h: h.order)

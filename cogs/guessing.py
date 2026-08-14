@@ -109,14 +109,11 @@ class GuessCog(commands.Cog):
         return next((d.level for d in song.difficulties if d.type == diff), None)
 
     def _pool_songs(self) -> list:
-        # exclude unreleased/future content and placeholder ids from guessing
+        # exclude unreleased/future content from guessing answers (the m9999 placeholder is already
+        # dropped globally by the data store, so it can't be an answer or a guess match)
         assert self.bot.data
         now = time.time() * 1000
-        return [
-            s
-            for s in self.bot.data.songs()
-            if s.id != "m9999" and (not s.startTime or s.startTime <= now)
-        ]
+        return [s for s in self.bot.data.songs() if not s.startTime or s.startTime <= now]
 
     async def _build(self, mode: str) -> dict | None:
         assert self.bot.data and self.bot.holo
@@ -234,7 +231,8 @@ class GuessCog(commands.Cog):
             r["answerName"] = card.character
             r["holomem_id"] = card.characterId
             r["card_id"] = card.id
-            r["reveal_image"] = holo.image_url(card.thumb)
+            r["reveal_file"] = unsquished  # full (unsquished) card art -> main reveal image
+            r["reveal_thumb"] = holo.image_url(card.thumb)  # card thumbnail -> embed thumbnail slot
             r["data"].update(
                 {
                     "image": img,
@@ -345,8 +343,10 @@ class GuessCog(commands.Cog):
         return extra
 
     def _reveal_media(self, data: dict, embed: discord.Embed) -> list[discord.File]:
-        # event logos are squished, so they're unsquished at build time and attached; other
-        # reveals (jacket / chart png / card thumb) are unsquished already and go by url
+        # squished art (event logo, card full art) is unsquished at build time and attached as the
+        # main image; square art (jacket) goes by url. the card thumbnail rides in the thumbnail slot.
+        if data.get("reveal_thumb"):
+            embed.set_thumbnail(url=data["reveal_thumb"])
         if data.get("reveal_file"):
             embed.set_image(url="attachment://reveal.png")
             return [discord.File(io.BytesIO(data["reveal_file"]), "reveal.png")]
