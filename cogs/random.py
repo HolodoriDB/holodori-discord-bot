@@ -49,12 +49,12 @@ class RandomCog(commands.Cog):
             if md:
                 level = md.difficultyLevel
                 notes = md.fullComboNoteCount
-        lines = [f"**{diff.title()} {level}**" + (f" ({notes:,} notes)" if notes else "")]
+        lines = [f"**{diff.title()} {level}**" + (f" `({notes:,} notes)`" if notes else "")]
         if detail:
             if detail.characterGroupDisplayName:
-                lines.append(f"**Singer:** {detail.characterGroupDisplayName}")
+                lines.append(f"**Singer:** `{detail.characterGroupDisplayName}`")
             if detail.composer and detail.composer != "-":
-                lines.append(f"**Composer:** {detail.composer}")
+                lines.append(f"**Composer:** `{detail.composer}`")
         embed = embeds.embed(title=s.title, description="\n".join(lines))
         if s.jacket:
             embed.set_thumbnail(url=self.bot.holo.image_url(s.jacket))
