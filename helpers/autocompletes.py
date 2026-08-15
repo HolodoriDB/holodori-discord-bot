@@ -58,11 +58,18 @@ class Autocompletes:
     def tier(self) -> AutocompleteIntCb:
         async def cb(interaction: discord.Interaction, current: str):
             q = current.strip()
-            return [
-                app_commands.Choice(name=f"{rank} ({label})" if label else str(rank), value=rank)
-                for rank, label in await self._tier_list()
-                if not q or str(rank).startswith(q)
-            ][:25]
+            # ranks 1-100 are individual players (all regions, no tag); borders are the cutoffs
+            opts = [(r, "") for r in range(100, 0, -1)] + await self._tier_list()
+            out: list[app_commands.Choice[int]] = []
+            for rank, label in opts:
+                if q and not str(rank).startswith(q):
+                    continue
+                out.append(
+                    app_commands.Choice(name=f"{rank} ({label})" if label else str(rank), value=rank)
+                )
+                if len(out) >= 25:
+                    break
+            return out
 
         return cb
 

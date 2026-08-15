@@ -35,7 +35,18 @@ _HEAT_STOPS = [
     (0.875, (121, 83, 169)),
     (1.000, (48, 25, 52)),
 ]
-_HEAT_EMPTY = (22, 25, 33, 255)  # outside the event's data window
+# data-quality markers (copied from sbuga-bot): MD/PD are our fetch gaps, ND/N+ are the player
+# being off the top 100
+_X_FILL = (36, 27, 31, 255)  # hour outside the event window (drawn with a red X)
+_X_LINE = (214, 68, 78, 255)
+_MD_FILL = (48, 24, 27, 255)  # "MD": our fetches failed for most of the hour
+_MD_TEXT = (214, 68, 78, 255)
+_ND_FILL = (28, 31, 40, 255)  # "ND": fetched all hour but the player wasn't on the top 100
+_ND_TEXT = (150, 162, 200, 255)
+_FLAG_PD = (255, 205, 70, 255)  # yellow "*": partial data (a real fetch gap)
+_FLAG_NP = (96, 176, 240, 255)  # blue "+": N+ (player off the top 100 part of the hour)
+_COVER_MS = 60_000  # each fetch covers +-this; larger gaps count as missing time
+_PD_MISSING_MS = 120_000  # >2 min gap in an hour -> partial data
 
 
 def _fmt_score(n: float) -> str:
@@ -204,124 +215,204 @@ def _heat_color(t: float) -> tuple[int, int, int, int]:
     return (*_HEAT_STOPS[-1][1], 255)
 
 
+def _covered_intervals(times: list[int]) -> list[tuple[int, int]]:
+    # merge each fetch's +-_COVER_MS window into disjoint covered intervals (sorted input)
+    merged: list[tuple[int, int]] = []
+    for t in times:
+        s, e = t - _COVER_MS, t + _COVER_MS
+        if merged and s <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], e))
+        else:
+            merged.append((s, e))
+    return merged
+
+
+def _missing_ms(merged: list[tuple[int, int]], lo: int, hi: int) -> int:
+    # ms of [lo, hi) not inside any covered interval (a real gap between fetches)
+    covered = 0
+    for s, e in merged:
+        a, b = max(s, lo), min(e, hi)
+        if b > a:
+            covered += b - a
+    return max(0, (hi - lo) - covered)
+
+
+def _small_img(text: str) -> bytes:
+    img = Image.new("RGBA", (600, 200), _BG)
+    ImageDraw.Draw(img).text((20, 90), text, font=_font(24), fill=_MUTED)
+    out = io.BytesIO()
+    img.convert("RGB").save(out, "PNG")
+    return out.getvalue()
+
+
 def render_heatmap(
-    points: list,
+    value_series: list,
     title: str,
     *,
+    start_ms: int | None,
+    end_ms: int | None,
+    now_ms: int,
+    coverage: list[int] | None = None,
+    presence: list[int] | None = None,
     tz: datetime.tzinfo | None = None,
-    start_time: int | None = None,
 ) -> bytes:
-    """day x hour grid coloured by event points gained per hour (EPH), from a cumulative series."""
+    """day x hour grid coloured by event points gained per hour (EPH).
+
+    `value_series` is the cumulative [[ms, score], ...] to derive EPH from. `coverage` is the fetch
+    timestamps (defaults to the series' own) used to flag our gaps as MD/PD. `presence` (player
+    mode) is the timestamps the player was on the top 100, used to flag ND (off all hour) / N+.
+    """
     tz = tz or datetime.timezone.utc
-    pts = sorted((int(x), float(y)) for x, y in points)
-    if len(pts) < 2:
-        img = Image.new("RGBA", (600, 200), _BG)
-        d = ImageDraw.Draw(img)
-        d.text((20, 90), "Not enough data yet.", font=_font(24), fill=_MUTED)
-        out = io.BytesIO()
-        img.convert("RGB").save(out, "PNG")
-        return out.getvalue()
+    pts = sorted((int(x), float(y)) for x, y in value_series)
+    if len(pts) < 2 or not start_ms or not end_ms or end_ms <= start_ms:
+        return _small_img("Not enough data yet.")
+    xs = [p[0] for p in pts]
+    cov = sorted(int(t) for t in (coverage if coverage is not None else xs))
+    merged = _covered_intervals(cov)
+    pres = sorted(int(t) for t in presence) if presence is not None else None
+    is_user = pres is not None
 
-    first, last = pts[0][0], pts[-1][0]
-    xs = [p[0] for p in pts]  # timestamps only, for bisect seeks in _cum_at
-    start = int(start_time) if start_time else first
-    start_dt = datetime.datetime.fromtimestamp(start / 1000, tz)
-    start_date = start_dt.date()
+    start_dt = datetime.datetime.fromtimestamp(start_ms / 1000, tz)
+    end_dt = datetime.datetime.fromtimestamp(end_ms / 1000, tz)
+    day_one = start_dt.date()
+    num_days = max(1, (end_dt.date() - day_one).days + 1)
 
-    # bucket each clock hour's gain into (day, hour). the hour anchor floors to the local hour so
-    # columns line up with wall-clock hours
-    anchor = int(start_dt.replace(minute=0, second=0, microsecond=0).timestamp() * 1000)
-    grid: dict[tuple[int, int], float] = {}
-    max_day = 1
-    max_val = 0.0
-    b = anchor
-    while b < last:
-        nb = b + _HOUR_MS
-        if nb > first:  # skip hours entirely before the first sample
-            gain = max(0.0, _cum_at(pts, xs, min(nb, last)) - _cum_at(pts, xs, max(b, first)))
-            dt = datetime.datetime.fromtimestamp(b / 1000, tz)
-            day = (dt.date() - start_date).days + 1
-            if day >= 1:
-                grid[(day, dt.hour)] = gain
-                max_day = max(max_day, day)
-                max_val = max(max_val, gain)
-        b = nb
-    max_val = max_val or 1.0
+    # classify every cell: outside / future / md / nd / (count, val, plus, pd)
+    cells: dict[tuple[int, int], tuple] = {}
+    max_val = 1.0
+    has_md = has_pd = has_nd = has_np = False
+    for row in range(num_days):
+        for hour in range(24):
+            cs = int(
+                datetime.datetime.combine(
+                    day_one + datetime.timedelta(days=row), datetime.time(hour=hour), tzinfo=tz
+                ).timestamp()
+                * 1000
+            )
+            ce = cs + _HOUR_MS
+            if ce <= start_ms or cs >= end_ms:
+                cells[(row, hour)] = ("outside",)
+                continue
+            if cs > now_ms:
+                cells[(row, hour)] = ("future",)
+                continue
+            lo, hi = max(cs, start_ms), min(ce, end_ms, now_ms)
+            window = max(1, hi - lo)
+            missing = _missing_ms(merged, lo, hi)
+            if missing > window / 2:
+                cells[(row, hour)] = ("md",)
+                has_md = True
+                continue
+            if is_user and pres is not None:
+                p_ct = bisect.bisect_right(pres, hi) - bisect.bisect_left(pres, lo)
+                if p_ct == 0:  # fetched all hour, never on the top 100
+                    cells[(row, hour)] = ("nd",)
+                    has_nd = True
+                    continue
+                c_ct = bisect.bisect_right(cov, hi) - bisect.bisect_left(cov, lo)
+                plus = (c_ct - p_ct) > 0  # off the top 100 part of the hour
+            else:
+                plus = False
+            val = max(0.0, _cum_at(pts, xs, hi) - _cum_at(pts, xs, lo))
+            pd = missing > _PD_MISSING_MS
+            has_pd, has_np = has_pd or pd, has_np or plus
+            cells[(row, hour)] = ("count", val, plus, pd)
+            max_val = max(max_val, val)
 
-    label_w = 96 * _SS
+    label_w = 110 * _SS
     cell_w, cell_h = 46 * _SS, 30 * _SS
     head_h = 24 * _SS
     title_h = 46 * _SS
-    legend_h = 44 * _SS
-    grid_w = 24 * cell_w
-    W = label_w + grid_w + 20 * _SS
-    H = title_h + head_h + max_day * cell_h + legend_h
-    gx0 = label_w
+    note_lines = 1 + has_md + has_pd + has_np + has_nd
+    legend_h = 24 * _SS + note_lines * 20 * _SS
+    W = label_w + 24 * cell_w + 20 * _SS
     gy0 = title_h + head_h
+    H = gy0 + num_days * cell_h + legend_h
+    gx0 = label_w
 
     img = Image.new("RGBA", (W, H), _BG)
     draw = ImageDraw.Draw(img)
     f_title = _font(24 * _SS)
     f_axis = _font(13 * _SS)
     f_cell = _font(11 * _SS)
+    f_flag = _font(15 * _SS)
     f_day = _font(13 * _SS)
 
     draw.text((14 * _SS, 14 * _SS), title, font=f_title, fill=_TEXT)
-
-    # hour labels across the top
     for h in range(24):
-        cx = gx0 + h * cell_w + cell_w // 2
-        draw.text((cx, gy0 - 6 * _SS), str(h), font=f_axis, fill=_MUTED, anchor="mb")
+        draw.text(
+            (gx0 + h * cell_w + cell_w // 2, gy0 - 6 * _SS), str(h), font=f_axis, fill=_MUTED, anchor="mb"
+        )
 
-    for day in range(1, max_day + 1):
-        cy = gy0 + (day - 1) * cell_h
-        day_dt = start_date + datetime.timedelta(days=day - 1)
+    for row in range(num_days):
+        cy = gy0 + row * cell_h
+        day_dt = day_one + datetime.timedelta(days=row)
         draw.text(
             (label_w - 10 * _SS, cy + cell_h // 2),
-            f"{day_dt.strftime('%a')} Day {day}",
+            f"{day_dt.strftime('%a')} Day {row + 1}",
             font=f_day,
             fill=_MUTED,
             anchor="rm",
         )
-        for h in range(24):
-            cx = gx0 + h * cell_w
-            val = grid.get((day, h))
-            if val is None:
-                color = _HEAT_EMPTY
-            elif val <= 0:
-                color = (255, 255, 255, 255)  # zero gain: white, off the gradient
-            else:
-                color = _heat_color(val / max_val)
-            draw.rectangle([cx, cy, cx + cell_w - _SS, cy + cell_h - _SS], fill=color)
-            if val is not None:
-                bright = 0.299 * color[0] + 0.587 * color[1] + 0.114 * color[2]
-                draw.text(
-                    (cx + cell_w // 2, cy + cell_h // 2),
-                    _fmt_gain(val),
-                    font=f_cell,
-                    fill=_TEXT if bright < 150 else _BG,
-                    anchor="mm",
-                )
+        for hour in range(24):
+            cx = gx0 + hour * cell_w
+            box = [cx, cy, cx + cell_w - _SS, cy + cell_h - _SS]
+            kind = cells[(row, hour)]
+            if kind[0] == "future":
+                continue
+            if kind[0] == "outside":
+                draw.rectangle(box, fill=_X_FILL)
+                m = 6 * _SS
+                draw.line([(cx + m, cy + m), (cx + cell_w - m, cy + cell_h - m)], fill=_X_LINE, width=_SS)
+                draw.line([(cx + m, cy + cell_h - m), (cx + cell_w - m, cy + m)], fill=_X_LINE, width=_SS)
+                continue
+            if kind[0] == "md":
+                draw.rectangle(box, fill=_MD_FILL)
+                draw.text((cx + cell_w // 2, cy + cell_h // 2), "MD", font=f_cell, fill=_MD_TEXT, anchor="mm")
+                continue
+            if kind[0] == "nd":
+                draw.rectangle(box, fill=_ND_FILL)
+                draw.text((cx + cell_w // 2, cy + cell_h // 2), "ND", font=f_cell, fill=_ND_TEXT, anchor="mm")
+                continue
+            _, val, plus, pd = kind
+            color = (255, 255, 255, 255) if val <= 0 else _heat_color(val / max_val)
+            draw.rectangle(box, fill=color)
+            bright = 0.299 * color[0] + 0.587 * color[1] + 0.114 * color[2]
+            draw.text(
+                (cx + cell_w // 2, cy + cell_h // 2),
+                _fmt_gain(val),
+                font=f_cell,
+                fill=_TEXT if bright < 150 else _BG,
+                anchor="mm",
+            )
+            if pd:  # partial data - yellow asterisk, top-right
+                draw.text((cx + cell_w - 3 * _SS, cy + _SS), "*", font=f_flag, fill=_FLAG_PD, anchor="ra")
+            if plus:  # off the top 100 part of the hour - blue plus, top-left
+                draw.text((cx + 3 * _SS, cy + _SS), "+", font=f_flag, fill=_FLAG_NP, anchor="la")
 
     # legend: a white "+0" swatch (off the gradient) then the gradient bar
-    ly = gy0 + max_day * cell_h + 14 * _SS
+    ly = gy0 + num_days * cell_h + 14 * _SS
     sw = 16 * _SS
     draw.rectangle([gx0, ly, gx0 + sw, ly + 12 * _SS], fill=(255, 255, 255, 255))
     draw.text((gx0 + sw // 2, ly + 16 * _SS), "+0", font=f_axis, fill=_MUTED, anchor="mt")
     bar_x = gx0 + sw + 22 * _SS
     lw = 200 * _SS
     for i in range(lw):
-        draw.line(
-            [(bar_x + i, ly), (bar_x + i, ly + 12 * _SS)], fill=_heat_color(i / lw), width=1
-        )
+        draw.line([(bar_x + i, ly), (bar_x + i, ly + 12 * _SS)], fill=_heat_color(i / lw), width=1)
     draw.text((bar_x + lw, ly + 16 * _SS), _fmt_score(max_val), font=f_axis, fill=_MUTED, anchor="rt")
-    draw.text(
-        (bar_x + lw + 16 * _SS, ly + 6 * _SS),
-        "event points / hour",
-        font=f_axis,
-        fill=_MUTED,
-        anchor="lm",
-    )
+    draw.text((bar_x + lw + 16 * _SS, ly + 6 * _SS), "event points / hour", font=f_axis, fill=_MUTED, anchor="lm")
+
+    # marker legend: one line per marker that actually appears
+    ny = ly + 26 * _SS
+    for on, text, col in (
+        (has_md, "MD - Missing data. Our fetches failed for most of this hour.", _MD_TEXT),
+        (has_pd, "* - Partial data. A fetch gap, so this hour's value may be off.", _FLAG_PD),
+        (has_np, "+ - At least this much; they were off the top 100 part of the hour.", _FLAG_NP),
+        (has_nd, "ND - No data. They were not on the top 100 this hour.", _ND_TEXT),
+    ):
+        if on:
+            draw.text((gx0, ny), text, font=f_axis, fill=col, anchor="lt")
+            ny += 20 * _SS
 
     img = img.resize((W // _SS, H // _SS), Image.Resampling.LANCZOS)
     out = io.BytesIO()

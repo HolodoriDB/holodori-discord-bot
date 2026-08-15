@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import time
 from typing import TYPE_CHECKING
 
 import discord
@@ -225,12 +226,13 @@ class GraphCog(commands.Cog):
 
     @app_commands.command(
         name="heatmap",
-        description="Hourly event point gain (EPH) heatmap for a tier's cutoff.",
+        description="Hourly event point gain (EPH) heatmap for a player, or a tier's cutoff.",
     )
     @app_commands.allowed_installs(guilds=True, users=True)
     @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     @app_commands.describe(
-        tier="Tier cutoff rank (e.g. 1000).",
+        tier="Rank to track. Ranks 1-100 track that player; a border tracks the cutoff.",
+        by_tier="Track the cutoff line itself instead of the player at that rank.",
         region="Game server region.",
         event="Event (defaults to the latest).",
         timezone="Timezone for the hour columns (defaults to your setting).",
@@ -241,6 +243,7 @@ class GraphCog(commands.Cog):
         self,
         interaction: discord.Interaction,
         tier: int,
+        by_tier: bool | None = None,
         region: str = "default",
         event: str | None = None,
         timezone: str | None = None,
@@ -255,35 +258,72 @@ class GraphCog(commands.Cog):
                 ephemeral=True,
             )
             return
+        # a border (rank > 100) has no single player behind it, so it can only be a cutoff heatmap
+        if by_tier is False and tier > 100:
+            await interaction.response.send_message(
+                embed=embeds.error_embed(
+                    f"Rank {tier} has no single player behind it (only ranks 1-100 do). "
+                    "Set `by_tier: true` for a cutoff heatmap."
+                ),
+                ephemeral=True,
+            )
+            return
         await interaction.response.defer(thinking=True)
         region = await self._region(interaction.user.id, region)
         tz_name = timezone or await self.bot.user_data.get_settings(interaction.user.id, "timezone")
         tz = timezones.resolve(tz_name)
         ev = await self._resolve_event(region, event)
         chapter = ev.chapters[-1] if ev and ev.chapters else None
+        player_mode = (tier <= 100) if by_tier is None else (not by_tier)
 
         try:
-            # border=True: a heatmap only needs the cutoff line, so skip the player-series lookup
+            # player mode needs both the player series and the cutoff series (the latter is our
+            # fetch coverage); a cutoff heatmap needs only the cutoff, so border=True skips the lookup
             data = await self.bot.holo.get_event_graph(
-                region, tier, event_id=event, chapter_id=chapter, border=True
+                region, tier, event_id=event, chapter_id=chapter, border=not player_mode
             )
         except HolodoriError as e:
             msg = e.detail if e.status == 400 and e.detail else f"Couldn't fetch graph: {e.detail or e.status}"
             await interaction.followup.send(embed=embeds.error_embed(msg))
             return
-        series = data.get("tier") or []
-        if len(series) < 2:
+        tier_series = data.get("tier") or []
+        if len(tier_series) < 2:
             await interaction.followup.send(
                 embed=embeds.error_embed("Not enough cutoff data for that event/tier yet.")
             )
             return
+        coverage = [int(p[0]) for p in tier_series]
+        start = data.get("startTime") or coverage[0]
+        end = data.get("endTime") or coverage[-1]
 
-        title = f"Tier {tier} EPH - {REGION_LABELS.get(region, region)}"
+        presence: list[int] | None = None
+        if player_mode:
+            user_series = data.get("user") or []
+            if len(user_series) < 2:
+                await interaction.followup.send(
+                    embed=embeds.error_embed(f"No tracked player is at T{tier} for this event.")
+                )
+                return
+            value_series = user_series
+            presence = [int(p[0]) for p in user_series]
+            title = f"{data.get('name') or f'T{tier}'} EPH - {REGION_LABELS.get(region, region)}"
+        else:
+            value_series = tier_series
+            title = f"Tier {tier} Cutoff EPH - {REGION_LABELS.get(region, region)}"
+
         img = await asyncio.to_thread(
-            render_heatmap, series, title, tz=tz, start_time=data.get("startTime")
+            render_heatmap,
+            value_series,
+            title,
+            start_ms=start,
+            end_ms=end,
+            now_ms=int(time.time() * 1000),
+            coverage=coverage,
+            presence=presence,
+            tz=tz,
         )
         embed = embeds.embed(title=title)
-        last_ms = max((int(p[0]) for p in series), default=0)
+        last_ms = max((int(p[0]) for p in value_series), default=0)
         if last_ms:
             embed.description = f"**Last Data Update:** <t:{last_ms // 1000}:R>"
         files = [discord.File(io.BytesIO(img), "heatmap.png")]
