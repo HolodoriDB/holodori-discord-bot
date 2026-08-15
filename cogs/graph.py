@@ -11,7 +11,7 @@ from discord.ext import commands
 from helpers import details, embeds, imaging, timezones
 from helpers.autocompletes import REGION_CHOICES, REGION_LABELS, autocompletes
 from helpers.views import HoloView
-from services.graph import render_graph
+from services.graph import render_graph, render_heatmap
 from services.holodori import HolodoriError
 
 if TYPE_CHECKING:
@@ -68,6 +68,7 @@ class GraphCog(commands.Cog):
         song_title: str | None,
         tz: tzinfo,
         ev: EventInfo | None,
+        predict: bool = False,
     ) -> tuple[discord.Embed, list[discord.File]]:
         assert self.bot.holo
         try:
@@ -81,6 +82,10 @@ class GraphCog(commands.Cog):
                 music_id=music_id,
             )
         except HolodoriError as e:
+            # 400s are our own validation (bad region/tier), whose detail is a ready-to-show
+            # sentence like "This tier does not exist as a cutoff on this region."
+            if e.status == 400 and e.detail:
+                return embeds.error_embed(e.detail), []
             return embeds.error_embed(f"Couldn't fetch graph: {e.detail or e.status}"), []
         tier_series = data.get("tier") or []
         user_series = data.get("user") or []
@@ -92,14 +97,34 @@ class GraphCog(commands.Cog):
             lines.append((str(data.get("name") or f"#{tier}"), user_series, _USER))
         if not lines:
             return embeds.error_embed("No graph data for that event/tier yet."), []
+        prediction = data.get("prediction")
+        if predict and not prediction:
+            if music or data.get("songScore"):
+                return embeds.error_embed(
+                    "Predictions are only available for relay (event point) events, "
+                    "not song-score or per-song boards."
+                ), []
+            return embeds.error_embed(
+                "There isn't enough data yet to project this event's final cutoff."
+            ), []
         suffix = f" - {song_title}" if music and song_title else ""
         title = f"Tier {tier} {label} - {REGION_LABELS.get(region, region)}{suffix}"
-        img = await asyncio.to_thread(render_graph, lines, title, tz=tz)
+        img = await asyncio.to_thread(
+            render_graph, lines, title, tz=tz, prediction=prediction if predict else None
+        )
 
         embed = embeds.embed(title=title)
+        parts: list[str] = []
         last_ms = max((int(p[0]) for _, s, _ in lines for p in s), default=0)
         if last_ms:
-            embed.description = f"**Last Data Update:** <t:{last_ms // 1000}:R>"
+            parts.append(f"**Last Data Update:** <t:{last_ms // 1000}:R>")
+        if predict and prediction:
+            parts.append(
+                f"**Predicted T{tier} final:** {prediction['final']:,} EP "
+                f"(<t:{prediction['endTime'] // 1000}:R>)"
+            )
+        if parts:
+            embed.description = "\n".join(parts)
         files = [discord.File(io.BytesIO(img), "graph.png")]
         logo_bytes = (
             await details.unsquished_bytes(self.bot, ev.logo, imaging.ASPECT_LOGO)
@@ -119,6 +144,7 @@ class GraphCog(commands.Cog):
         event="Event (defaults to the latest).",
         mode="Total event score or per-song scores.",
         border="Use the tier border line.",
+        predict="Project the final cutoff (relay events only).",
         timezone="Timezone for the time axis (defaults to your setting).",
     )
     @app_commands.choices(region=REGION_CHOICES, mode=_MODE_CHOICES)
@@ -131,6 +157,7 @@ class GraphCog(commands.Cog):
         event: str | None = None,
         mode: str = "total",
         border: bool = False,
+        predict: bool = False,
         timezone: str | None = None,
     ) -> None:
         assert self.bot.holo and self.bot.user_data and self.bot.data
@@ -176,6 +203,7 @@ class GraphCog(commands.Cog):
             song_title=song_title,
             tz=tz,
             ev=ev,
+            predict=predict,
         )
         if not files or not songs:
             await interaction.followup.send(embed=embed, files=files)
@@ -194,6 +222,80 @@ class GraphCog(commands.Cog):
             restrict_to=interaction.user.id,
         )
         view.message = await interaction.followup.send(embed=embed, files=files, view=view, wait=True)
+
+    @graph.command(
+        name="heatmap",
+        description="Hourly event point gain (EPH) heatmap for a tier's cutoff.",
+    )
+    @app_commands.describe(
+        tier="Tier rank to graph (e.g. 100).",
+        region="Game server region.",
+        event="Event (defaults to the latest).",
+        border="Use the tier border line.",
+        timezone="Timezone for the hour columns (defaults to your setting).",
+    )
+    @app_commands.choices(region=REGION_CHOICES)
+    @app_commands.autocomplete(event=autocompletes.event())
+    async def heatmap(
+        self,
+        interaction: discord.Interaction,
+        tier: int,
+        region: str = "default",
+        event: str | None = None,
+        border: bool = False,
+        timezone: str | None = None,
+    ) -> None:
+        assert self.bot.holo and self.bot.user_data and self.bot.data
+        if timezone is not None and timezones.canonical(timezone) is None:
+            await interaction.response.send_message(
+                embed=embeds.error_embed(
+                    f"`{timezone}` isn't a valid timezone. Use a common one "
+                    f"({timezones.COMMON}) or an IANA name like `Europe/Paris`."
+                ),
+                ephemeral=True,
+            )
+            return
+        await interaction.response.defer(thinking=True)
+        region = await self._region(interaction.user.id, region)
+        tz_name = timezone or await self.bot.user_data.get_settings(interaction.user.id, "timezone")
+        tz = timezones.resolve(tz_name)
+        ev = await self._resolve_event(region, event)
+        chapter = ev.chapters[-1] if ev and ev.chapters else None
+
+        try:
+            data = await self.bot.holo.get_event_graph(
+                region, tier, event_id=event, chapter_id=chapter, border=border or None
+            )
+        except HolodoriError as e:
+            msg = e.detail if e.status == 400 and e.detail else f"Couldn't fetch graph: {e.detail or e.status}"
+            await interaction.followup.send(embed=embeds.error_embed(msg))
+            return
+        series = data.get("tier") or []
+        if len(series) < 2:
+            await interaction.followup.send(
+                embed=embeds.error_embed("Not enough cutoff data for that event/tier yet.")
+            )
+            return
+
+        title = f"Tier {tier} EPH - {REGION_LABELS.get(region, region)}"
+        img = await asyncio.to_thread(
+            render_heatmap, series, title, tz=tz, start_time=data.get("startTime")
+        )
+        embed = embeds.embed(title=title)
+        last_ms = max((int(p[0]) for p in series), default=0)
+        if last_ms:
+            embed.description = f"**Last Data Update:** <t:{last_ms // 1000}:R>"
+        files = [discord.File(io.BytesIO(img), "heatmap.png")]
+        logo_bytes = (
+            await details.unsquished_bytes(self.bot, ev.logo, imaging.ASPECT_LOGO)
+            if ev and ev.logo
+            else None
+        )
+        if logo_bytes:
+            files.append(discord.File(io.BytesIO(logo_bytes), "logo.png"))
+            embed.set_thumbnail(url="attachment://logo.png")
+        embed.set_image(url="attachment://heatmap.png")
+        await interaction.followup.send(embed=embed, files=files)
 
 
 class _GraphView(HoloView):

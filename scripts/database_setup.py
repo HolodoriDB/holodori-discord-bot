@@ -30,8 +30,11 @@ CREATE TABLE IF NOT EXISTS event_trackers (
     channel_id BIGINT PRIMARY KEY,
     guild_id BIGINT NOT NULL,
     region TEXT NOT NULL,
-    tracking_type INT NOT NULL
+    tracking_type INT NOT NULL,
+    last_post DOUBLE PRECISION NOT NULL DEFAULT 0
 );
+-- migration for tables created before last_post existed
+ALTER TABLE event_trackers ADD COLUMN IF NOT EXISTS last_post DOUBLE PRECISION NOT NULL DEFAULT 0;
 
 -- per tier / per user alert subscriptions (/track); config holds tier, cutoff, min, max, followed
 -- userId, name, last_score, last_rank
@@ -44,6 +47,18 @@ CREATE TABLE IF NOT EXISTS track_alerts (
     event_id TEXT NOT NULL,
     kind TEXT NOT NULL,
     config JSONB NOT NULL DEFAULT '{}'
+);
+
+-- per channel co-op room waitlist queues (/waitlist); users is the queue order, leavers maps a
+-- discord id to the unix time they expect to leave
+CREATE TABLE IF NOT EXISTS waitlists (
+    channel_id BIGINT PRIMARY KEY,
+    guild_id BIGINT NOT NULL,
+    song TEXT,
+    users BIGINT[] NOT NULL DEFAULT '{}',
+    leavers JSONB NOT NULL DEFAULT '{}',
+    message_id BIGINT,
+    last_use DOUBLE PRECISION NOT NULL DEFAULT 0
 );
 """
 

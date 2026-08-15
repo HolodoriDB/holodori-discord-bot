@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 
 _TOP = 20  # rows in a channel leaderboard post
 _POLL_MINUTES = 2
+_HOURLY_SECONDS = 3540  # ~59 min, so the 2 min tick lands hourly posts without double-firing near hour boundaries
 _TIME_CHOICES = [
     app_commands.Choice(name="2 minutes", value=2),
     app_commands.Choice(name="1 hour", value=60),
@@ -48,7 +49,6 @@ def _t20_rows(rankings: list[dict]) -> list[LBRow]:
 class TrackerCog(commands.Cog):
     def __init__(self, bot: HolodoriBot) -> None:
         self.bot = bot
-        self._hourly_last: dict[int, int] = {}  # channel id -> hour bucket last posted (type 60)
         self.poll.start()
 
     async def cog_unload(self) -> None:
@@ -70,10 +70,15 @@ class TrackerCog(commands.Cog):
             lambda: render_leaderboard(_t20_rows(rankings), ["Score", "Change"], show_delta=True)
         )
         embed = embeds.embed(title=data.get("eventName") or "Event Leaderboard")
+        parts: list[str] = []
+        if data.get("final"):  # the event's aggregation has finished
+            parts.append("**EVENT HAS ENDED**")
         # lastMinute is the last snapshot time in epoch ms; updatedAt is an iso string, not a number
         updated = data.get("lastMinute")
         if isinstance(updated, (int, float)):
-            embed.description = f"Top {_TOP}, updated <t:{int(updated) // 1000}:R>"
+            parts.append(f"Top {_TOP}, updated <t:{int(updated) // 1000}:R>")
+        if parts:
+            embed.description = "\n".join(parts)
         embed.set_image(url="attachment://lb.png")
         files = [discord.File(io.BytesIO(img), "lb.png")]
         logo = data.get("logo")
@@ -106,7 +111,7 @@ class TrackerCog(commands.Cog):
         except Exception:
             return
         regions = {t["region"] for t in trackers} | {a["region"] for a in alerts}
-        hour_bucket = int(time.time() // 3600)
+        now = time.time()
         ended_notified: set[int] = set()  # channels already told "event ended" this tick
 
         for region in regions:
@@ -128,8 +133,8 @@ class TrackerCog(commands.Cog):
                     continue
                 if t["tracking_type"] == 2:
                     await self._post_board(channel, data)
-                elif self._hourly_last.get(t["channel_id"]) != hour_bucket:
-                    self._hourly_last[t["channel_id"]] = hour_bucket
+                elif now - (t.get("last_post") or 0) >= _HOURLY_SECONDS:
+                    await self.bot.user_data.set_tracker_last_post(t["channel_id"], now)
                     await self._post_board(channel, data)
 
             for a in alerts:

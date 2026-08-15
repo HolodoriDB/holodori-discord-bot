@@ -162,9 +162,15 @@ class UserData:
     async def list_event_trackers(self) -> list[dict]:
         async with self.db.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT channel_id, guild_id, region, tracking_type FROM event_trackers"
+                "SELECT channel_id, guild_id, region, tracking_type, last_post FROM event_trackers"
             )
         return [dict(r) for r in rows]
+
+    async def set_tracker_last_post(self, channel_id: int, ts: float) -> None:
+        async with self.db.acquire() as conn:
+            await conn.execute(
+                "UPDATE event_trackers SET last_post = $2 WHERE channel_id = $1", channel_id, ts
+            )
 
     # --- per tier / per user alerts (/track) ---
 
@@ -221,6 +227,91 @@ class UserData:
                 "DELETE FROM track_alerts WHERE id = $1 RETURNING id", alert_id
             )
         return row is not None
+
+    # --- co-op room waitlists (/waitlist) ---
+
+    async def get_waitlist(self, channel_id: int) -> dict | None:
+        async with self.db.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT guild_id, song, users, leavers, message_id, last_use "
+                "FROM waitlists WHERE channel_id = $1",
+                channel_id,
+            )
+        if row is None:
+            return None
+        d = dict(row)
+        d["users"] = list(d["users"] or [])
+        lv = d["leavers"]
+        d["leavers"] = json.loads(lv) if isinstance(lv, str) else (lv or {})
+        return d
+
+    async def save_waitlist(
+        self,
+        channel_id: int,
+        guild_id: int,
+        *,
+        song: str | None,
+        users: list[int],
+        leavers: dict,
+        message_id: int | None,
+        last_use: float,
+    ) -> None:
+        async with self.db.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO waitlists (channel_id, guild_id, song, users, leavers, message_id, last_use)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                ON CONFLICT (channel_id) DO UPDATE SET
+                    guild_id = EXCLUDED.guild_id, song = EXCLUDED.song, users = EXCLUDED.users,
+                    leavers = EXCLUDED.leavers, message_id = EXCLUDED.message_id,
+                    last_use = EXCLUDED.last_use
+                """,
+                channel_id,
+                guild_id,
+                song,
+                users,
+                json.dumps(leavers),
+                message_id,
+                last_use,
+            )
+
+    async def clear_waitlist(self, channel_id: int) -> None:
+        async with self.db.acquire() as conn:
+            await conn.execute(
+                "UPDATE waitlists SET song = NULL, users = '{}', leavers = '{}', message_id = NULL "
+                "WHERE channel_id = $1",
+                channel_id,
+            )
+
+    async def remove_user_all_waitlists(self, user_id: int) -> list[int]:
+        async with self.db.acquire() as conn:
+            rows = await conn.fetch(
+                "UPDATE waitlists SET users = array_remove(users, $1) WHERE $1 = ANY(users) "
+                "RETURNING channel_id",
+                user_id,
+            )
+        return [r["channel_id"] for r in rows]
+
+    async def list_waitlists(
+        self, guild_id: int, *, song: str | None = None, since: float = 0.0
+    ) -> list[dict]:
+        async with self.db.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT channel_id, song, users, last_use FROM waitlists
+                WHERE guild_id = $1 AND last_use >= $2 AND ($3::text IS NULL OR song = $3)
+                ORDER BY last_use DESC
+                """,
+                guild_id,
+                since,
+                song,
+            )
+        out: list[dict] = []
+        for r in rows:
+            d = dict(r)
+            d["users"] = list(d["users"] or [])
+            out.append(d)
+        return out
 
     async def get_guesses_leaderboard(self, guess_type: str, page: int):
         per_page = GUESS_LEADERBOARD_PER_PAGE
