@@ -70,8 +70,9 @@ class TrackerCog(commands.Cog):
             lambda: render_leaderboard(_t20_rows(rankings), ["Score", "Change"], show_delta=True)
         )
         embed = embeds.embed(title=data.get("eventName") or "Event Leaderboard")
-        updated = data.get("updatedAt")
-        if updated:
+        # lastMinute is the last snapshot time in epoch ms; updatedAt is an iso string, not a number
+        updated = data.get("lastMinute")
+        if isinstance(updated, (int, float)):
             embed.description = f"Top {_TOP}, updated <t:{int(updated) // 1000}:R>"
         embed.set_image(url="attachment://lb.png")
         files = [discord.File(io.BytesIO(img), "lb.png")]

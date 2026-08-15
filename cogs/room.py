@@ -140,8 +140,6 @@ class RoomCog(commands.Cog):
     def result_embed(self, kind: str, message: str) -> discord.Embed:
         em = embeds.embed(title="Rm", color=discord.Color(_RM_COLOR))
         em.add_field(name=_cap(kind), value=_cap(message))
-        if self.bot.user:
-            em.set_thumbnail(url=self.bot.user.display_avatar.url)
         return em
 
     # --- rename ratelimit (persisted to psql so the 10-minute window survives restarts) ---
@@ -170,6 +168,8 @@ class RoomCog(commands.Cog):
             )
         try:
             await channel.edit(name=new_name)
+        except discord.Forbidden:
+            return "error", "I'm missing the Manage Channels permission for this channel."
         except discord.HTTPException:
             return "error", GENERIC_ERROR
         times.append(now)
