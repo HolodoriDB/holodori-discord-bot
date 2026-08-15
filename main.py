@@ -54,6 +54,7 @@ class HolodoriBot(commands.Bot):
             hcfg["api_url"],
             bypass_header=hcfg.get("bypass_header", ""),
             bypass_value=hcfg.get("bypass_value", ""),
+            internal_token=hcfg.get("internal_token", ""),
             lang=hcfg.get("lang", "eng"),
         )
         data = HolodoriData(self.holo, refresh_interval=hcfg.get("refresh_interval", 300))

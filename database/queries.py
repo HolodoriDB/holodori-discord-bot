@@ -111,6 +111,117 @@ class UserData:
             )
             return guess_stats[key]
 
+    # --- room-code rename ratelimit (persisted so the 2-per-10-min window survives restarts) ---
+
+    async def get_room_renames(self, channel_id: int) -> list[float]:
+        async with self.db.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT times FROM room_renames WHERE channel_id = $1", channel_id
+            )
+        return list(row["times"]) if row and row["times"] else []
+
+    async def set_room_renames(self, channel_id: int, times: list[float]) -> None:
+        async with self.db.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO room_renames (channel_id, times) VALUES ($1, $2)
+                ON CONFLICT (channel_id) DO UPDATE SET times = EXCLUDED.times
+                """,
+                channel_id,
+                times,
+            )
+
+    # --- event ranking trackers (/tracking channel subscriptions) ---
+
+    async def set_event_tracker(
+        self, channel_id: int, guild_id: int, region: str, tracking_type: int
+    ) -> None:
+        async with self.db.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO event_trackers (channel_id, guild_id, region, tracking_type)
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT (channel_id) DO UPDATE SET
+                    guild_id = EXCLUDED.guild_id,
+                    region = EXCLUDED.region,
+                    tracking_type = EXCLUDED.tracking_type
+                """,
+                channel_id,
+                guild_id,
+                region,
+                tracking_type,
+            )
+
+    async def remove_event_tracker(self, channel_id: int) -> bool:
+        async with self.db.acquire() as conn:
+            row = await conn.fetchrow(
+                "DELETE FROM event_trackers WHERE channel_id = $1 RETURNING channel_id", channel_id
+            )
+        return row is not None
+
+    async def list_event_trackers(self) -> list[dict]:
+        async with self.db.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT channel_id, guild_id, region, tracking_type FROM event_trackers"
+            )
+        return [dict(r) for r in rows]
+
+    # --- per tier / per user alerts (/track) ---
+
+    async def add_track_alert(
+        self,
+        guild_id: int,
+        channel_id: int,
+        user_id: int,
+        region: str,
+        event_id: str,
+        kind: str,
+        config: dict,
+    ) -> int:
+        async with self.db.acquire() as conn:
+            return await conn.fetchval(
+                """
+                INSERT INTO track_alerts
+                    (guild_id, channel_id, user_id, region, event_id, kind, config)
+                VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id
+                """,
+                guild_id,
+                channel_id,
+                user_id,
+                region,
+                event_id,
+                kind,
+                json.dumps(config),
+            )
+
+    async def list_track_alerts(self, guild_id: int | None = None) -> list[dict]:
+        async with self.db.acquire() as conn:
+            if guild_id is None:
+                rows = await conn.fetch("SELECT * FROM track_alerts ORDER BY id")
+            else:
+                rows = await conn.fetch(
+                    "SELECT * FROM track_alerts WHERE guild_id = $1 ORDER BY id", guild_id
+                )
+        out: list[dict] = []
+        for r in rows:
+            d = dict(r)
+            d["config"] = json.loads(d["config"]) if d.get("config") else {}
+            out.append(d)
+        return out
+
+    async def update_track_alert(self, alert_id: int, config: dict) -> None:
+        async with self.db.acquire() as conn:
+            await conn.execute(
+                "UPDATE track_alerts SET config = $1 WHERE id = $2", json.dumps(config), alert_id
+            )
+
+    async def remove_track_alert(self, alert_id: int) -> bool:
+        async with self.db.acquire() as conn:
+            row = await conn.fetchrow(
+                "DELETE FROM track_alerts WHERE id = $1 RETURNING id", alert_id
+            )
+        return row is not None
+
     async def get_guesses_leaderboard(self, guess_type: str, page: int):
         per_page = GUESS_LEADERBOARD_PER_PAGE
         total_result = await self.db.fetchval(

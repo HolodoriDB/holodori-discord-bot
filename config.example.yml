@@ -14,6 +14,9 @@ holodori:
   # cdn is public and needs no header.
   bypass_header: "x-six-seven"
   bypass_value: ""
+  # shared secret matching the backend's auth.internal-token; lets the ranking tracker read stable
+  # user ids the public api omits. empty = user tracking is unavailable
+  internal_token: ""
   lang: "eng"                   # default display language: eng/jpn/kor/cht/chs/ind
   regions: ["us", "as", "jp"]   # event server regions
   refresh_interval: 300         # seconds between data refreshes

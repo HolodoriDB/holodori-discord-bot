@@ -224,19 +224,25 @@ class _GraphView(HoloView):
         self.tz = tz
         self.ev = ev
         self.music_id = music_id
-        select = discord.ui.Select(
-            placeholder="Choose a song...",
-            options=[
-                discord.SelectOption(label=title[:100], value=mid, default=mid == music_id)
-                for mid, title in songs[:25]
-            ],
-        )
+        self._song_list = songs
         self._songs = dict(songs)
-        select.callback = self._on_song  # type: ignore[method-assign]
-        self.add_item(select)
+        self._select: discord.ui.Select = discord.ui.Select(placeholder="Choose a song...")
+        self._select.callback = self._on_song  # type: ignore[method-assign]
+        self.add_item(self._select)
+        self._sync_options()
+
+    def _sync_options(self) -> None:
+        # rebuild the options every time so the picked song stays selected in the dropdown. without
+        # this the dropdown keeps its original default, so re-picking that song registers as no
+        # change and discord ignores it
+        self._select.options = [
+            discord.SelectOption(label=title[:100], value=mid, default=mid == self.music_id)
+            for mid, title in self._song_list[:25]
+        ]
 
     async def _on_song(self, interaction: discord.Interaction) -> None:
         self.music_id = interaction.data["values"][0]  # type: ignore[index]
+        self._sync_options()
         await interaction.response.defer()
         embed, files = await self.cog.render_graph(
             region=self.region,

@@ -62,11 +62,13 @@ class HolodoriClient:
         *,
         bypass_header: str = "",
         bypass_value: str = "",
+        internal_token: str = "",
         lang: str = "eng",
     ) -> None:
         self.base = api_url.rstrip("/")
         self.lang = lang
         self._headers = {bypass_header: bypass_value} if bypass_header and bypass_value else {}
+        self._internal_token = internal_token
         self._session: aiohttp.ClientSession | None = None
         self._asset_info: AssetInfo = AssetInfo()
 
@@ -82,10 +84,10 @@ class HolodoriClient:
     def _url(self, path: str) -> str:
         return f"{self.base}{path}"
 
-    async def _get(self, path: str, **params: Any) -> Any:
+    async def _get(self, path: str, *, _headers: dict[str, str] | None = None, **params: Any) -> Any:
         session = await self._ensure_session()
         clean = {k: v for k, v in params.items() if v is not None}
-        async with session.get(self._url(path), params=clean) as resp:
+        async with session.get(self._url(path), params=clean, headers=_headers) as resp:
             if resp.status == 404:
                 raise HolodoriNotFound(404, await _detail(resp))
             if resp.status >= 400:
@@ -212,6 +214,26 @@ class HolodoriClient:
             music=str(music).lower() if music is not None else None,
             music_id=music_id,
             at=at,
+        )
+
+    async def get_event_leaderboard_ids(
+        self,
+        region: str,
+        *,
+        event_id: str | None = None,
+        chapter_id: str | None = None,
+        language: str | None = None,
+    ) -> dict:
+        # authorized variant: sends the shared internal token so each row keeps its stable userId
+        # (the public leaderboard omits it). used by the ranking tracker to follow a player.
+        headers = {"x-internal-token": self._internal_token} if self._internal_token else None
+        return await self._get(
+            "/api/events/leaderboard",
+            _headers=headers,
+            region=region,
+            event_id=event_id,
+            chapter_id=chapter_id,
+            language=language or self.lang,
         )
 
     async def get_event_graph(
