@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING, Awaitable, Callable
 
 import discord
@@ -11,10 +12,14 @@ if TYPE_CHECKING:
 AutocompleteCb = Callable[
     [discord.Interaction, str], Awaitable[list[app_commands.Choice[str]]]
 ]
+AutocompleteIntCb = Callable[
+    [discord.Interaction, str], Awaitable[list[app_commands.Choice[int]]]
+]
 
 LANGUAGES = ["eng", "jpn", "kor", "cht", "chs", "ind"]
 REGIONS = ["us", "as", "jp"]
 REGION_LABELS = {"us": "US", "as": "Asia", "jp": "Japan"}
+REGION_ABBR = {"us": "US", "as": "AS", "jp": "JP"}
 # includes a Default option that resolves to the user's default_region setting
 REGION_CHOICES = [app_commands.Choice(name="Default", value="default")] + [
     app_commands.Choice(name=REGION_LABELS[r], value=r) for r in REGIONS
@@ -24,6 +29,42 @@ REGION_CHOICES = [app_commands.Choice(name="Default", value="default")] + [
 class Autocompletes:
     def __init__(self) -> None:
         self.holodori: HolodoriData | None = None
+        self._tiers: list[tuple[int, str]] = []  # (rank, "US/AS/JP")
+        self._tiers_at = 0.0
+
+    async def _tier_list(self) -> list[tuple[int, str]]:
+        # border ranks change rarely, so cache the cross-region set for a while
+        now = time.time()
+        if self._tiers and now - self._tiers_at < 600:
+            return self._tiers
+        if not self.holodori:
+            return self._tiers
+        try:
+            data = await self.holodori.client.get_event_tiers()
+        except Exception:
+            return self._tiers
+        tiers: list[tuple[int, str]] = []
+        for t in data:
+            if t.get("rank") is None:
+                continue
+            regs = [str(r) for r in (t.get("regions") or [])]
+            # only tag regions when the border is missing from one or more; blank if in all three
+            label = "" if len(regs) >= len(REGIONS) else "/".join(REGION_ABBR.get(r, r.upper()) for r in regs)
+            tiers.append((int(t["rank"]), label))
+        self._tiers = tiers
+        self._tiers_at = now
+        return self._tiers
+
+    def tier(self) -> AutocompleteIntCb:
+        async def cb(interaction: discord.Interaction, current: str):
+            q = current.strip()
+            return [
+                app_commands.Choice(name=f"{rank} ({label})" if label else str(rank), value=rank)
+                for rank, label in await self._tier_list()
+                if not q or str(rank).startswith(q)
+            ][:25]
+
+        return cb
 
     def card(self) -> AutocompleteCb:
         async def cb(interaction: discord.Interaction, current: str):

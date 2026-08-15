@@ -5,6 +5,7 @@ fed by /api/events/graph, whose GraphSeries has `tier` and `user` as [[ms, score
 
 from __future__ import annotations
 
+import bisect
 import datetime
 import io
 import math
@@ -172,18 +173,16 @@ def render_graph(
     return out.getvalue()
 
 
-def _cum_at(pts: list[tuple[int, float]], ts: float) -> float:
-    # cumulative score at ts by linear interpolation, clamped at the ends
+def _cum_at(pts: list[tuple[int, float]], xs: list[int], ts: float) -> float:
+    # cumulative score at ts by linear interpolation, clamped; xs = [p[0] ...] for a bisect seek
     if ts <= pts[0][0]:
         return pts[0][1]
     if ts >= pts[-1][0]:
         return pts[-1][1]
-    for i in range(len(pts) - 1):
-        a, b = pts[i], pts[i + 1]
-        if a[0] <= ts < b[0]:
-            f = (ts - a[0]) / (b[0] - a[0]) if b[0] != a[0] else 0.0
-            return a[1] + f * (b[1] - a[1])
-    return pts[-1][1]
+    i = bisect.bisect_right(xs, ts)
+    a, b = pts[i - 1], pts[i]
+    f = (ts - a[0]) / (b[0] - a[0]) if b[0] != a[0] else 0.0
+    return a[1] + f * (b[1] - a[1])
 
 
 def _lerp3(a: tuple[int, int, int], b: tuple[int, int, int], t: float) -> tuple[int, int, int]:
@@ -224,6 +223,7 @@ def render_heatmap(
         return out.getvalue()
 
     first, last = pts[0][0], pts[-1][0]
+    xs = [p[0] for p in pts]  # timestamps only, for bisect seeks in _cum_at
     start = int(start_time) if start_time else first
     start_dt = datetime.datetime.fromtimestamp(start / 1000, tz)
     start_date = start_dt.date()
@@ -238,7 +238,7 @@ def render_heatmap(
     while b < last:
         nb = b + _HOUR_MS
         if nb > first:  # skip hours entirely before the first sample
-            gain = max(0.0, _cum_at(pts, min(nb, last)) - _cum_at(pts, max(b, first)))
+            gain = max(0.0, _cum_at(pts, xs, min(nb, last)) - _cum_at(pts, xs, max(b, first)))
             dt = datetime.datetime.fromtimestamp(b / 1000, tz)
             day = (dt.date() - start_date).days + 1
             if day >= 1:

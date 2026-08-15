@@ -148,7 +148,7 @@ class GraphCog(commands.Cog):
         timezone="Timezone for the time axis (defaults to your setting).",
     )
     @app_commands.choices(region=REGION_CHOICES, mode=_MODE_CHOICES)
-    @app_commands.autocomplete(event=autocompletes.event())
+    @app_commands.autocomplete(event=autocompletes.event(), tier=autocompletes.tier())
     async def cutoff(
         self,
         interaction: discord.Interaction,
@@ -223,26 +223,26 @@ class GraphCog(commands.Cog):
         )
         view.message = await interaction.followup.send(embed=embed, files=files, view=view, wait=True)
 
-    @graph.command(
+    @app_commands.command(
         name="heatmap",
         description="Hourly event point gain (EPH) heatmap for a tier's cutoff.",
     )
+    @app_commands.allowed_installs(guilds=True, users=True)
+    @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     @app_commands.describe(
-        tier="Tier rank to graph (e.g. 100).",
+        tier="Tier cutoff rank (e.g. 1000).",
         region="Game server region.",
         event="Event (defaults to the latest).",
-        border="Use the tier border line.",
         timezone="Timezone for the hour columns (defaults to your setting).",
     )
     @app_commands.choices(region=REGION_CHOICES)
-    @app_commands.autocomplete(event=autocompletes.event())
+    @app_commands.autocomplete(event=autocompletes.event(), tier=autocompletes.tier())
     async def heatmap(
         self,
         interaction: discord.Interaction,
         tier: int,
         region: str = "default",
         event: str | None = None,
-        border: bool = False,
         timezone: str | None = None,
     ) -> None:
         assert self.bot.holo and self.bot.user_data and self.bot.data
@@ -263,8 +263,9 @@ class GraphCog(commands.Cog):
         chapter = ev.chapters[-1] if ev and ev.chapters else None
 
         try:
+            # border=True: a heatmap only needs the cutoff line, so skip the player-series lookup
             data = await self.bot.holo.get_event_graph(
-                region, tier, event_id=event, chapter_id=chapter, border=border or None
+                region, tier, event_id=event, chapter_id=chapter, border=True
             )
         except HolodoriError as e:
             msg = e.detail if e.status == 400 and e.detail else f"Couldn't fetch graph: {e.detail or e.status}"

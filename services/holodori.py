@@ -258,6 +258,10 @@ class HolodoriClient:
             music_id=music_id,
         )
 
+    async def get_event_tiers(self) -> list[dict]:
+        data = await self._get("/api/events/tiers")
+        return data.get("tiers") or [] if isinstance(data, dict) else []
+
     # --- misc data ---
 
     async def get_items(self, lang: str | None = None) -> list[dict]:
