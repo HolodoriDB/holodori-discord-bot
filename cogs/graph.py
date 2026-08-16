@@ -9,7 +9,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from helpers import details, embeds, imaging, timezones
+from helpers import embeds, timezones
 from helpers.autocompletes import REGION_CHOICES, REGION_LABELS, autocompletes
 from helpers.views import HoloView
 from services.graph import render_graph, render_heatmap
@@ -127,14 +127,9 @@ class GraphCog(commands.Cog):
         if parts:
             embed.description = "\n".join(parts)
         files = [discord.File(io.BytesIO(img), "graph.png")]
-        logo_bytes = (
-            await details.unsquished_bytes(self.bot, ev.logo, imaging.ASPECT_LOGO)
-            if ev and ev.logo
-            else None
-        )
-        if logo_bytes:
-            files.append(discord.File(io.BytesIO(logo_bytes), "logo.png"))
-            embed.set_thumbnail(url="attachment://logo.png")
+        logo = self.bot.holo.unsquished_image_url(ev.logo) if ev and ev.logo else None
+        if logo:
+            embed.set_thumbnail(url=logo)
         embed.set_image(url="attachment://graph.png")
         return embed, files
 
@@ -327,14 +322,9 @@ class GraphCog(commands.Cog):
         if last_ms:
             embed.description = f"**Last Data Update:** <t:{last_ms // 1000}:R>"
         files = [discord.File(io.BytesIO(img), "heatmap.png")]
-        logo_bytes = (
-            await details.unsquished_bytes(self.bot, ev.logo, imaging.ASPECT_LOGO)
-            if ev and ev.logo
-            else None
-        )
-        if logo_bytes:
-            files.append(discord.File(io.BytesIO(logo_bytes), "logo.png"))
-            embed.set_thumbnail(url="attachment://logo.png")
+        logo = self.bot.holo.unsquished_image_url(ev.logo) if ev and ev.logo else None
+        if logo:
+            embed.set_thumbnail(url=logo)
         embed.set_image(url="attachment://heatmap.png")
         await interaction.followup.send(embed=embed, files=files)
 

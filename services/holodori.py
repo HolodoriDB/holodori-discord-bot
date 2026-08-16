@@ -127,6 +127,11 @@ class HolodoriClient:
     def image_url(self, path: str | None) -> str | None:
         return self.asset_url(f"{path}.webp") if path else None
 
+    def unsquished_image_url(self, path: str | None) -> str | None:
+        # squished-into-pot art (card full art, event logo/banner) has a _unsquished.webp sibling
+        # baked at its true aspect by the extractor; point straight at it, no client-side unsquish.
+        return self.asset_url(f"{path}_unsquished.webp") if path else None
+
     def manual_asset(self, name: str) -> str:
         v = self._asset_info.manual
         url = f"{self.base}/manual_assets/{name}"

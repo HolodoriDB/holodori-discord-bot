@@ -9,7 +9,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from helpers import details, embeds, imaging
+from helpers import embeds
 from helpers.autocompletes import REGION_CHOICES, REGION_LABELS
 from services.holodori import HolodoriError
 from services.leaderboard import LBRow, render_leaderboard
@@ -81,13 +81,9 @@ class TrackerCog(commands.Cog):
             embed.description = "\n".join(parts)
         embed.set_image(url="attachment://lb.png")
         files = [discord.File(io.BytesIO(img), "lb.png")]
-        logo = data.get("logo")
-        logo_bytes = (
-            await details.unsquished_bytes(self.bot, logo, imaging.ASPECT_LOGO) if logo else None
-        )
-        if logo_bytes:
-            files.append(discord.File(io.BytesIO(logo_bytes), "logo.png"))
-            embed.set_thumbnail(url="attachment://logo.png")
+        logo = self.bot.holo.unsquished_image_url(data.get("logo")) if self.bot.holo else None
+        if logo:
+            embed.set_thumbnail(url=logo)
         try:
             await channel.send(embed=embed, files=files)
         except discord.HTTPException:

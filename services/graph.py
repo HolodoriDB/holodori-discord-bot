@@ -245,6 +245,22 @@ def _small_img(text: str) -> bytes:
     return out.getvalue()
 
 
+def _wrap_px(draw, text: str, font, max_w: float) -> list[str]:
+    # greedy word-wrap so a long legend line fits the image width instead of being cut off
+    lines: list[str] = []
+    cur = ""
+    for word in text.split(" "):
+        trial = f"{cur} {word}".strip()
+        if not cur or draw.textlength(trial, font=font) <= max_w:
+            cur = trial
+        else:
+            lines.append(cur)
+            cur = word
+    if cur:
+        lines.append(cur)
+    return lines
+
+
 def render_heatmap(
     value_series: list,
     title: str,
@@ -405,14 +421,19 @@ def render_heatmap(
     # marker legend: one line per marker that actually appears
     ny = ly + 26 * _SS
     for on, text, col in (
-        (has_md, "MD - Missing data. Our fetches failed for most of this hour.", _MD_TEXT),
-        (has_pd, "* - Partial data. A fetch gap, so this hour's value may be off.", _FLAG_PD),
-        (has_np, "+ - At least this much; they were off the top 100 part of the hour.", _FLAG_NP),
+        (has_md, "MD - Missing data. We failed to fetch data for most of this hour.", _MD_TEXT),
+        (has_pd, "* - Partial data. We had some data gaps, so this hour's value may be off.", _FLAG_PD),
+        (
+            has_np,
+            "+ - At least this much, could be more as they fell off the top 100 leaderboard and were untrackable for part of the hour.",
+            _FLAG_NP,
+        ),
         (has_nd, "ND - No data. They were not on the top 100 this hour.", _ND_TEXT),
     ):
         if on:
-            draw.text((gx0, ny), text, font=f_axis, fill=col, anchor="lt")
-            ny += 20 * _SS
+            for line in _wrap_px(draw, text, f_axis, W - gx0 - 16 * _SS):
+                draw.text((gx0, ny), line, font=f_axis, fill=col, anchor="lt")
+                ny += 20 * _SS
 
     img = img.resize((W // _SS, H // _SS), Image.Resampling.LANCZOS)
     out = io.BytesIO()

@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import asyncio
-import io
 import re
 from typing import TYPE_CHECKING
 
 import discord
 
-from helpers import embeds, imaging
+from helpers import embeds
 from helpers.emojis import emojis
 from services.holodori import HolodoriError, HolodoriNotFound
 
@@ -48,24 +46,6 @@ def _fmt_length(seconds: int | None) -> str:
 # --- builders ---
 
 
-async def unsquished_bytes(bot: HolodoriBot, path: str | None, aspect: float) -> bytes | None:
-    """fetch a squished cdn asset and unsquish it to its true aspect (png bytes), or None."""
-    if not path or not bot.holo:
-        return None
-    try:
-        raw = await bot.holo.fetch_bytes(bot.holo.image_url(path))
-        return await asyncio.to_thread(imaging.unsquish, raw, aspect)
-    except Exception:
-        return None
-
-
-async def _unsquished_file(
-    bot: HolodoriBot, path: str | None, aspect: float, name: str
-) -> discord.File | None:
-    png = await unsquished_bytes(bot, path, aspect)
-    return discord.File(io.BytesIO(png), name) if png else None
-
-
 async def card_embed(bot: HolodoriBot, card: CardDetail) -> tuple[discord.Embed, list[discord.File]]:
     assert bot.holo
     color = _ATTR_COLORS.get(card.attributeName or "", 0xE85D9E)
@@ -85,15 +65,11 @@ async def card_embed(bot: HolodoriBot, card: CardDetail) -> tuple[discord.Embed,
         desc = clean_skill_text(skill.descriptions[-1]) if skill.descriptions else "—"
         label = _SKILL_LABELS.get(skill.type, skill.type.title())
         embed.add_field(name=f"{label} Skill", value=desc[:1024] or "—", inline=False)
-    files: list[discord.File] = []
-    art = await _unsquished_file(bot, card.image, imaging.ASPECT_FULL, "card.png")
+    art = bot.holo.unsquished_image_url(card.image)
     if art:
-        files.append(art)
-        embed.set_image(url="attachment://card.png")
-    elif card.image:
-        embed.set_image(url=bot.holo.image_url(card.image))
+        embed.set_image(url=art)
     embed.set_footer(text=f"ID: {card.id}")
-    return embed, files
+    return embed, []
 
 
 def song_embed(bot: HolodoriBot, detail: SongDetail) -> discord.Embed:
@@ -158,16 +134,13 @@ async def event_embed(bot: HolodoriBot, ev: EventInfo) -> tuple[discord.Embed, l
         f"**Ends:** {ends}",
     ]
     embed = embeds.embed(title=ev.name, description="\n".join(lines))
-    files: list[discord.File] = []
-    logo = await _unsquished_file(bot, ev.logo, imaging.ASPECT_LOGO, "logo.png")
+    logo = bot.holo.unsquished_image_url(ev.logo)
     if logo:
-        files.append(logo)
-        embed.set_thumbnail(url="attachment://logo.png")
-    banner = await _unsquished_file(bot, ev.banner, imaging.ASPECT_BANNER, "banner.png")
+        embed.set_thumbnail(url=logo)
+    banner = bot.holo.unsquished_image_url(ev.banner)
     if banner:
-        files.append(banner)
-        embed.set_image(url="attachment://banner.png")
-    return embed, files
+        embed.set_image(url=banner)
+    return embed, []
 
 
 def find_member(

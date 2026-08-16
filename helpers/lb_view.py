@@ -23,7 +23,6 @@ class LeaderboardView(HoloView):
         rows: list[dict],
         title: str,
         thumb: str | None = None,
-        thumb_bytes: bytes | None = None,
         restrict_to: int,
         per_page: int = PER_PAGE,
     ) -> None:
@@ -31,7 +30,6 @@ class LeaderboardView(HoloView):
         self.rows = rows
         self.title = title
         self.thumb = thumb
-        self.thumb_bytes = thumb_bytes
         self.per_page = per_page
         self.page = 1
         self.offset = False
@@ -64,17 +62,12 @@ class LeaderboardView(HoloView):
         return render_leaderboard(self._lbrows(), columns, show_delta=self.offset)
 
     def _files(self, img: bytes) -> list[discord.File]:
-        files = [discord.File(io.BytesIO(img), "lb.png")]
-        if self.thumb_bytes:
-            files.append(discord.File(io.BytesIO(self.thumb_bytes), "thumb.png"))
-        return files
+        return [discord.File(io.BytesIO(img), "lb.png")]
 
     def _embed(self) -> discord.Embed:
         embed = embeds.embed(title=self.title)
         embed.set_image(url="attachment://lb.png")
-        if self.thumb_bytes:
-            embed.set_thumbnail(url="attachment://thumb.png")
-        elif self.thumb:
+        if self.thumb:
             embed.set_thumbnail(url=self.thumb)
         embed.set_footer(text=f"Page {self.page}/{self.total_pages}")
         return embed

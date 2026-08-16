@@ -17,24 +17,6 @@ def _out(img: Image.Image) -> bytes:
     return buf.getvalue()
 
 
-# true display aspect (w/h) per squished-into-pot asset; see the frontend CardMedia/presetImage
-ASPECT_FULL = 16 / 9  # card full art (2048x1024)
-ASPECT_LOGO = 16 / 10  # event logo (1024x512)
-ASPECT_BANNER = 16 / 9  # event banner (2048x1024)
-
-
-def unsquish(data: bytes, aspect: float) -> bytes:
-    """shrink the over-long axis of a squished pot texture to its true aspect (no upscale)."""
-    img = Image.open(io.BytesIO(data)).convert("RGBA")
-    w, h = img.size
-    src = w / h
-    if src > aspect:
-        img = img.resize((max(1, round(h * aspect)), h), Image.Resampling.LANCZOS)
-    elif src < aspect:
-        img = img.resize((w, max(1, round(w / aspect))), Image.Resampling.LANCZOS)
-    return _out(img)
-
-
 def crop_square(
     data: bytes, *, size: int = 250, grayscale: bool = False, seed: int | None = None
 ) -> bytes:

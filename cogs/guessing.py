@@ -12,7 +12,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from data import search
-from helpers import details, embeds, imaging
+from helpers import embeds, imaging
 from helpers.emojis import emojis
 from helpers.views import HoloView
 from services import song_clip
@@ -218,12 +218,12 @@ class GuessCog(commands.Cog):
         cards = [c for c in self.bot.data.cards() if c.image and c.rarity >= 3]
         random.shuffle(cards)
         for card in cards[:8]:
-            raw = await self._fetch(holo.image_url(card.image))
+            art_url = holo.unsquished_image_url(card.image)
+            raw = await self._fetch(art_url)
             if not raw:
                 continue
-            unsquished = await asyncio.to_thread(imaging.unsquish, raw, imaging.ASPECT_FULL)
             img = await asyncio.to_thread(
-                imaging.crop_square, unsquished, size=250, grayscale=(mode == "character_bw")
+                imaging.crop_square, raw, size=250, grayscale=(mode == "character_bw")
             )
             member = self.bot.data.get_holomem(card.characterId)
             r = self._base(mode, "character")
@@ -231,7 +231,7 @@ class GuessCog(commands.Cog):
             r["answerName"] = card.character
             r["holomem_id"] = card.characterId
             r["card_id"] = card.id
-            r["reveal_file"] = unsquished  # full (unsquished) card art -> main reveal image
+            r["reveal_image"] = art_url  # full (unsquished) card art -> main reveal image
             r["reveal_thumb"] = holo.image_url(card.thumb)  # card thumbnail -> embed thumbnail slot
             r["data"].update(
                 {
@@ -256,16 +256,15 @@ class GuessCog(commands.Cog):
             return None
         random.shuffle(events)
         for ev in events[:6]:
-            raw = await self._fetch(holo.image_url(ev.banner))
+            raw = await self._fetch(holo.unsquished_image_url(ev.banner))
             if not raw:
                 continue
-            unsquished = await asyncio.to_thread(imaging.unsquish, raw, imaging.ASPECT_BANNER)
-            img = await asyncio.to_thread(imaging.crop_square, unsquished, size=250)
+            img = await asyncio.to_thread(imaging.crop_square, raw, size=250)
             r = self._base(mode, "event")
             r["answer"] = ev.eventId
             r["answerName"] = ev.name
             r["region"] = "us"
-            r["reveal_file"] = await details.unsquished_bytes(self.bot, ev.logo, imaging.ASPECT_LOGO)
+            r["reveal_image"] = holo.unsquished_image_url(ev.logo)  # event logo -> main reveal image
             r["data"]["image"] = img
             r["data"]["event_type"] = "Song Score" if ev.isSongScore else "Marathon"
             return r
@@ -343,13 +342,10 @@ class GuessCog(commands.Cog):
         return extra
 
     def _reveal_media(self, data: dict, embed: discord.Embed) -> list[discord.File]:
-        # squished art (event logo, card full art) is unsquished at build time and attached as the
-        # main image; square art (jacket) goes by url. the card thumbnail rides in the thumbnail slot.
+        # every reveal image is a cdn url now (squished art points at its _unsquished sibling); the
+        # card thumbnail rides in the thumbnail slot, the main art in the image slot.
         if data.get("reveal_thumb"):
             embed.set_thumbnail(url=data["reveal_thumb"])
-        if data.get("reveal_file"):
-            embed.set_image(url="attachment://reveal.png")
-            return [discord.File(io.BytesIO(data["reveal_file"]), "reveal.png")]
         if data.get("reveal_image"):
             embed.set_image(url=data["reveal_image"])
         return []
@@ -619,12 +615,10 @@ class GuessCog(commands.Cog):
             wrong = embeds.error_embed(
                 f"Incorrectly guessed **`{hit.name}`**." + GUESS_TIP, title="Incorrect"
             )
-            files: list[discord.File] = []
-            logo = await details.unsquished_bytes(self.bot, hit.logo, imaging.ASPECT_LOGO)
+            logo = self.bot.holo.unsquished_image_url(hit.logo)  # type: ignore[union-attr]
             if logo:
-                files.append(discord.File(io.BytesIO(logo), "logo.png"))
-                wrong.set_thumbnail(url="attachment://logo.png")
-            await message.reply(embed=wrong, files=files)
+                wrong.set_thumbnail(url=logo)
+            await message.reply(embed=wrong)
             await self._fail(message, data)
 
     # --- hints ---
