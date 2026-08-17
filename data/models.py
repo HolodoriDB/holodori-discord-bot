@@ -144,6 +144,8 @@ class EventInfo(_Model):
     revealStartTime: int | None = None
     isSongScore: bool = False
     chapters: list[str] = []
+    # the chapter running right now (else the latest) - what to default to
+    activeChapterId: str | None = None
     live: bool = False
     hasData: bool = False
 

@@ -9,12 +9,36 @@ Name, Score, Change; the name column is squeezed to keep a row within a target w
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
 
-DESKTOP_MAX = 42  # target row width (chars); the name column shrinks to fit it
+DESKTOP_MAX = 42  # target row width (cells); the name column shrinks to fit it
 MOBILE_MAX = 30
 
 _CLEAN = re.compile(r"[\n\t\r]")
+
+
+def _cw(ch: str) -> int:
+    # display cells: CJK/Hangul/fullwidth render 2-wide in Discord's monospace, everything else 1.
+    # padding by len() instead of this is what let a name like "하젤" shove the later columns right.
+    return 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+
+
+def _width(s: str) -> int:
+    return sum(_cw(c) for c in s)
+
+
+def _fit(s: str, w: int) -> str:
+    # left-align s in exactly w display cells: cut on a cell boundary, then pad with spaces
+    used = 0
+    out: list[str] = []
+    for ch in s:
+        c = _cw(ch)
+        if used + c > w:
+            break
+        out.append(ch)
+        used += c
+    return "".join(out) + " " * (w - used)
 
 
 @dataclass
@@ -53,7 +77,7 @@ def format_leaderboard(rows: list[LBRow], *, mobile: bool = False) -> str:
 
     rank_w = max(len(rank_lbl), *(len(str(r.rank)) for r in rows))
     tag_w = max(len(_tier_tag(r.rank_change)) for r in rows)
-    name_w = max(len(name_lbl), *(len(n) for n in names))
+    name_w = max(len(name_lbl), *(_width(n) for n in names))  # display cells, not char count
     score_w = max(len(score_lbl), *(len(f"{r.score:,}") for r in rows))
     change_w = max(len(change_lbl), *(len(_change_str(r.score_change)) for r in rows))
 
@@ -67,7 +91,7 @@ def format_leaderboard(rows: list[LBRow], *, mobile: bool = False) -> str:
     out = [
         row(
             rank_lbl.rjust(rank_w + tag_w),
-            name_lbl.ljust(name_w),
+            _fit(name_lbl, name_w),
             score_lbl.ljust(score_w),
             change_lbl.rjust(change_w),
         )
@@ -77,7 +101,7 @@ def format_leaderboard(rows: list[LBRow], *, mobile: bool = False) -> str:
         out.append(
             row(
                 rank,
-                name[:name_w].ljust(name_w),
+                _fit(name, name_w),  # truncate + pad by display width so CJK names stay aligned
                 f"{r.score:,}".rjust(score_w),
                 _change_str(r.score_change).rjust(change_w),
                 star=r.is_you,

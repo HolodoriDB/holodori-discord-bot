@@ -171,7 +171,8 @@ class GraphCog(commands.Cog):
         tz_name = timezone or await self.bot.user_data.get_settings(interaction.user.id, "timezone")
         tz = timezones.resolve(tz_name)
         ev = await self._resolve_event(region, event)
-        chapter = ev.chapters[-1] if ev and ev.chapters else None  # follow the latest chapter
+        # default to the chapter live right now (else the latest)
+        chapter = (ev.activeChapterId or (ev.chapters[-1] if ev.chapters else None)) if ev else None
         music = mode == "song"
 
         songs: list[tuple[str, str]] = []  # (music_id, title)
@@ -268,7 +269,8 @@ class GraphCog(commands.Cog):
         tz_name = timezone or await self.bot.user_data.get_settings(interaction.user.id, "timezone")
         tz = timezones.resolve(tz_name)
         ev = await self._resolve_event(region, event)
-        chapter = ev.chapters[-1] if ev and ev.chapters else None
+        # default to the chapter live right now (else the latest)
+        chapter = (ev.activeChapterId or (ev.chapters[-1] if ev.chapters else None)) if ev else None
         player_mode = (tier <= 100) if by_tier is None else (not by_tier)
 
         try:
