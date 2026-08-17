@@ -9,6 +9,8 @@ class ConfigDiscord(TypedDict):
     owner_ids: list[int]
     support_invite: str
     support_id: int
+    # role ids in the support server whose holders may manage aliases (owners always may)
+    alias_manager_role_ids: NotRequired[list[int]]
     tos_url: NotRequired[str]
     privacy_url: NotRequired[str]
     donate_url: NotRequired[str]

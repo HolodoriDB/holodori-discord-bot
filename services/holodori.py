@@ -12,6 +12,9 @@ from urllib.parse import quote
 import aiohttp
 
 from data.models import (
+    Alias,
+    AliasAddResponse,
+    AliasesResponse,
     AssetInfo,
     Card,
     CardDetail,
@@ -47,7 +50,10 @@ def _resolve_langs(obj: Any, lang: str) -> Any:
 class HolodoriError(Exception):
     def __init__(self, status: int, detail: Any = "") -> None:
         self.status = status
-        self.detail = str(detail)
+        # structured errors (e.g. a taken alias -> {code, id, target_id}) keep their dict on `data`;
+        # `detail` stays a plain string so existing `e.detail or e.status` messages read the same
+        self.data: dict[str, Any] = detail if isinstance(detail, dict) else {}
+        self.detail = str(self.data.get("code", "")) if self.data else str(detail)
         super().__init__(f"holodori API error {status}: {self.detail}")
 
 
@@ -104,6 +110,21 @@ class HolodoriClient:
                 raise HolodoriError(resp.status, await _detail(resp))
             return await resp.read()
 
+    def _internal_headers(self) -> dict[str, str]:
+        return {"x-internal-token": self._internal_token} if self._internal_token else {}
+
+    async def _send(self, method: str, path: str, *, json: Any = None) -> Any:
+        # POST/DELETE with the internal token; used only for the bot-only alias routes
+        session = await self._ensure_session()
+        async with session.request(
+            method, self._url(path), json=json, headers=self._internal_headers()
+        ) as resp:
+            if resp.status == 404:
+                raise HolodoriNotFound(404, await _detail(resp))
+            if resp.status >= 400:
+                raise HolodoriError(resp.status, await _detail(resp))
+            return await resp.json()
+
     # --- assets ---
 
     async def get_asset_info(self) -> AssetInfo:
@@ -126,6 +147,27 @@ class HolodoriClient:
 
     def image_url(self, path: str | None) -> str | None:
         return self.asset_url(f"{path}.webp") if path else None
+
+    # --- aliases (bot-only: every call carries the internal token) ---
+
+    async def get_aliases(self, kind: str) -> list[Alias]:
+        return AliasesResponse.model_validate(
+            await self._get(f"/api/aliases/{kind}", _headers=self._internal_headers())
+        ).aliases
+
+    async def add_alias(
+        self, kind: str, target_id: str, alias: str, region: str | None = None
+    ) -> AliasAddResponse:
+        return AliasAddResponse.model_validate(
+            await self._send(
+                "POST",
+                f"/api/aliases/{kind}",
+                json={"target_id": target_id, "alias": alias, "region": region},
+            )
+        )
+
+    async def remove_alias(self, kind: str, alias_id: int) -> None:
+        await self._send("DELETE", f"/api/aliases/{kind}", json={"alias_id": alias_id})
 
     def unsquished_image_url(self, path: str | None) -> str | None:
         # squished-into-pot art (card full art, event logo/banner) has a _unsquished.webp sibling

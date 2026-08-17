@@ -4,6 +4,7 @@ discord:
   owner_ids: []                 # owner discord ids (dev commands + alias auth)
   support_invite: ""            # support server invite url
   support_id: 0                 # support server guild id
+  alias_manager_role_ids: []    # role ids in the support server that may manage aliases (owners always may)
   tos_url: ""                   # legal links shown in /help (blank = omitted)
   privacy_url: ""
   donate_url: "https://ko-fi.com/uselessyum"

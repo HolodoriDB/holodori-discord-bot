@@ -153,3 +153,21 @@ class AssetInfo(_Model):
     cdn: str = ""
     hashes: dict[str, str] = {}
     manual: str | None = None
+
+
+# manually-added search aliases (song / event / holomem share one shape; target_id is the string id)
+class Alias(_Model):
+    id: int
+    target_id: str
+    alias: str
+    region: str | None = None
+    created_at: str | None = None
+
+
+class AliasesResponse(_Model):
+    aliases: list[Alias] = []
+
+
+class AliasAddResponse(_Model):
+    success: bool = False
+    id: int | None = None

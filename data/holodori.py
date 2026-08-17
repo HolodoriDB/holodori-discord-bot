@@ -22,6 +22,13 @@ CACHE_DIR = "cache"
 # (login campaigns, story, etc.) is filtered out so it can't appear as a valid event parameter.
 TRACKED_EVENT_TYPES = frozenset({1, 2})
 
+# manually-added search aliases, mirrored from the backend into a local copy. they poll on their own
+# short loop (independent of the game-data revision) so an alias added via the bot in another process
+# shows up quickly. NOTE: nothing matches against these yet - this is just the copy.
+ALIAS_KINDS = ("song", "event", "holomem")
+ALIAS_CACHE = "aliases.json"
+ALIAS_REFRESH_INTERVAL = 120
+
 
 class HolodoriData:
     def __init__(self, client: HolodoriClient, *, refresh_interval: int = 300) -> None:
@@ -37,26 +44,37 @@ class HolodoriData:
         self._groups: list[HolomemGroup] = []
         self._items: list[dict] = []
         self._events_cache: dict[tuple[str, str], tuple[float, list[EventInfo]]] = {}
+        # kind -> {target_id: sorted alias list}; the local mirror of the backend alias store
+        self._aliases: dict[str, dict[str, list[str]]] = {}
         self._task: asyncio.Task | None = None
+        self._alias_task: asyncio.Task | None = None
 
     # --- lifecycle ---
 
     async def start(self) -> None:
         self._load_from_disk()
+        self._load_aliases()
         try:
             await self.refresh()
         except Exception as e:
             LOGGING.warnprint(f"holodori initial refresh failed: {e}")
+        try:
+            await self.refresh_aliases()
+        except Exception as e:
+            LOGGING.warnprint(f"holodori initial alias refresh failed: {e}")
         self._task = asyncio.create_task(self._poll())
+        self._alias_task = asyncio.create_task(self._poll_aliases())
 
     async def stop(self) -> None:
-        if self._task:
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
-            self._task = None
+        for task in (self._task, self._alias_task):
+            if task:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+        self._task = None
+        self._alias_task = None
 
     async def _poll(self) -> None:
         while True:
@@ -144,6 +162,90 @@ class HolodoriData:
         except Exception as e:
             LOGGING.warnprint(f"holodori cache load failed: {e}")
 
+    # --- aliases (local mirror of the backend store; not wired into any matching yet) ---
+
+    def song_aliases(self, target_id: str) -> list[str]:
+        return list(self._aliases.get("song", {}).get(target_id, ()))
+
+    def event_aliases(self, target_id: str) -> list[str]:
+        return list(self._aliases.get("event", {}).get(target_id, ()))
+
+    def holomem_aliases(self, target_id: str) -> list[str]:
+        return list(self._aliases.get("holomem", {}).get(target_id, ()))
+
+    async def _fetch_aliases_for(self, kind: str) -> bool:
+        """Refresh one kind's local map from the api. True if it changed. A failed fetch keeps the
+        last known copy rather than dropping every alias."""
+        try:
+            aliases = await self.client.get_aliases(kind)
+        except Exception:
+            return False
+        by_target: dict[str, list[str]] = {}
+        for a in aliases:
+            by_target.setdefault(a.target_id, []).append(a.alias)
+        for values in by_target.values():
+            values.sort()
+        if by_target != self._aliases.get(kind, {}):
+            self._aliases[kind] = by_target
+            return True
+        return False
+
+    async def refresh_aliases(self) -> bool:
+        changed = False
+        for kind in ALIAS_KINDS:
+            if await self._fetch_aliases_for(kind):
+                changed = True
+        if changed:
+            self._save_aliases()
+        return changed
+
+    def add_alias_local(self, kind: str, target_id: str, alias: str) -> None:
+        """Record an alias just added through the api so the local copy is current at once, without
+        waiting for the next poll. `alias` is already preprocessed."""
+        values = self._aliases.setdefault(kind, {}).setdefault(target_id, [])
+        if alias not in values:
+            values.append(alias)
+            values.sort()
+        self._save_aliases()
+
+    def remove_alias_local(self, kind: str, target_id: str, alias: str) -> None:
+        by_target = self._aliases.setdefault(kind, {})
+        values = by_target.get(target_id)
+        if values and alias in values:
+            values.remove(alias)
+            if not values:
+                del by_target[target_id]
+        self._save_aliases()
+
+    def _save_aliases(self) -> None:
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        try:
+            with open(self._path(ALIAS_CACHE), "w", encoding="utf-8") as f:
+                json.dump(self._aliases, f, ensure_ascii=False)
+        except OSError as e:
+            LOGGING.warnprint(f"holodori alias cache write failed: {e}")
+
+    def _load_aliases(self) -> None:
+        path = self._path(ALIAS_CACHE)
+        if not os.path.exists(path):
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            self._aliases = {
+                k: {t: list(v) for t, v in m.items()} for k, m in data.items()
+            }
+        except Exception as e:
+            LOGGING.warnprint(f"holodori alias cache load failed: {e}")
+
+    async def _poll_aliases(self) -> None:
+        while True:
+            await asyncio.sleep(ALIAS_REFRESH_INTERVAL)
+            try:
+                await self.refresh_aliases()
+            except Exception as e:
+                LOGGING.warnprint(f"holodori alias refresh failed: {e}")
+
     # --- accessors ---
 
     def cards(self) -> list[Card]:
@@ -202,3 +304,43 @@ class HolodoriData:
 
     def match_holomem(self, query: str) -> Holomem | None:
         return search.best_match(query, self._holomems, lambda h: (h.name, h.shortName, h.id))
+
+    # --- alias-aware fuzzy matching (folds the local alias copy into the keys). NOT wired into any
+    #     autocomplete/command yet; here for later. events pass their list in (they are per-region).
+
+    def search_songs_aliased(self, query: str, limit: int = 25) -> list[Song]:
+        return search.rank(
+            query, self._songs, lambda s: (s.title, s.id, *self.song_aliases(s.id)), limit
+        )
+
+    def match_song_aliased(self, query: str) -> Song | None:
+        return search.best_match(
+            query, self._songs, lambda s: (s.title, s.id, *self.song_aliases(s.id))
+        )
+
+    def search_holomems_aliased(self, query: str, limit: int = 25) -> list[Holomem]:
+        return search.rank(
+            query,
+            self._holomems,
+            lambda h: (h.name, h.shortName, h.id, *self.holomem_aliases(h.id)),
+            limit,
+        )
+
+    def match_holomem_aliased(self, query: str) -> Holomem | None:
+        return search.best_match(
+            query,
+            self._holomems,
+            lambda h: (h.name, h.shortName, h.id, *self.holomem_aliases(h.id)),
+        )
+
+    def search_events_aliased(
+        self, events: list[EventInfo], query: str, limit: int = 25
+    ) -> list[EventInfo]:
+        return search.rank(
+            query, events, lambda e: (e.name, e.eventId, *self.event_aliases(e.eventId)), limit
+        )
+
+    def match_event_aliased(self, events: list[EventInfo], query: str) -> EventInfo | None:
+        return search.best_match(
+            query, events, lambda e: (e.name, e.eventId, *self.event_aliases(e.eventId))
+        )
