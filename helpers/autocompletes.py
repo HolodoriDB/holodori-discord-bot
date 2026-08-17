@@ -123,7 +123,8 @@ class Autocompletes:
         return cb
 
     def event_id(self) -> AutocompleteCb:
-        # events have no real name (only a generic label), so alias management picks them by id
+        # events have no real name (only a generic label), so alias management picks + displays them
+        # by id; matching is alias-aware so an existing alias also surfaces the event
         async def cb(interaction: discord.Interaction, current: str):
             if not self.holodori:
                 return []
@@ -132,10 +133,9 @@ class Autocompletes:
                 events = await self.holodori.events(region, self.holodori.client.lang)
             except Exception:
                 return []
-            q = current.lower().strip()
-            hits = [e for e in events if not q or q in e.eventId.lower() or q in e.name.lower()]
             return [
-                app_commands.Choice(name=e.eventId[:100], value=e.eventId) for e in hits[:25]
+                app_commands.Choice(name=e.eventId[:100], value=e.eventId)
+                for e in self.holodori.search_events_aliased(events, current, 25)
             ]
 
         return cb

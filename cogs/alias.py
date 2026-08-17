@@ -13,7 +13,6 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from data import search
 from data.search import preprocess
 from helpers import embeds
 from helpers.autocompletes import autocompletes
@@ -58,7 +57,7 @@ class AliasCog(commands.Cog):
         )
         return True
 
-    # --- target resolution (by real name/id; aliases are NOT used here) ---
+    # --- target resolution (alias-aware: an existing alias also resolves the song/event/holomem) ---
 
     async def _events(self) -> list:
         assert self.bot.data and self.bot.holo
@@ -77,15 +76,15 @@ class AliasCog(commands.Cog):
         assert self.bot.data
         data = self.bot.data
         if kind == "song":
-            m = data.get_song(query) or data.match_song(query)
+            m = data.get_song(query) or data.match_song_aliased(query)
             return (m.id, m.title) if m else None
         if kind == "holomem":
-            m = data.get_holomem(query) or data.match_holomem(query)
+            m = data.get_holomem(query) or data.match_holomem_aliased(query)
             return (m.id, m.name) if m else None
         events = await self._events()
-        ev = next((e for e in events if e.eventId == query), None) or search.best_match(
-            query, events, lambda e: (e.eventId, e.name)
-        )
+        ev = next(
+            (e for e in events if e.eventId == query), None
+        ) or data.match_event_aliased(events, query)
         # events have no real name (only a generic label), so the id is the identifier we show
         return (ev.eventId, ev.eventId) if ev else None
 
