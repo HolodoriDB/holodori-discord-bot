@@ -101,15 +101,15 @@ class GraphCog(commands.Cog):
         if not lines:
             return embeds.error_embed("No graph data for that event/tier yet."), []
         prediction = data.get("prediction")
+        predict_note: str | None = None
         if predict and not prediction:
-            if music or data.get("songScore"):
-                return embeds.error_embed(
-                    "Predictions are only available for relay (event point) events, "
-                    "not song-score or per-song boards."
-                ), []
-            return embeds.error_embed(
-                "There isn't enough data yet to project this event's final cutoff."
-            ), []
+            # graceful for the PREDICT toggle: render the graph (no projection line) + a note,
+            # instead of replacing the whole graph with an error embed
+            predict_note = (
+                "Predictions are only for relay (event-point) events, not song-score / per-song boards."
+                if music or data.get("songScore")
+                else "Not enough data yet to project a final (needs ~5% of the event)."
+            )
         suffix = f" - {song_title}" if music and song_title else ""
         title = f"Tier {tier} {label} - {REGION_LABELS.get(region, region)}{suffix}"
         img = await asyncio.to_thread(
@@ -126,6 +126,8 @@ class GraphCog(commands.Cog):
                 f"**Predicted T{tier} final:** {prediction['final']:,} EP "
                 f"(<t:{prediction['endTime'] // 1000}:R>)"
             )
+        elif predict_note:
+            parts.append(f"*{predict_note}*")
         if parts:
             embed.description = "\n".join(parts)
         files = [discord.File(io.BytesIO(img), "graph.png")]
@@ -204,10 +206,11 @@ class GraphCog(commands.Cog):
             ev=ev,
             predict=predict,
         )
-        # a view is worth showing when there's more than one chapter to switch between, or a song
-        # dropdown to offer
+        # a view is worth showing when there's more than one chapter to switch between, a song
+        # dropdown to offer, or a prediction to toggle (relay/EP events in total mode)
         chapters = chapters_from_event(ev)
-        if not files or (len(chapters) <= 1 and not songs):
+        can_predict = (not music) and ev is not None and not ev.isSongScore
+        if not files or (len(chapters) <= 1 and not songs and not can_predict):
             await interaction.followup.send(embed=embed, files=files)
             return
         view = _GraphView(
@@ -223,6 +226,7 @@ class GraphCog(commands.Cog):
             songs=songs,
             music_id=music_id,
             predict=predict,
+            can_predict=can_predict,
             restrict_to=interaction.user.id,
         )
         view.message = await interaction.followup.send(embed=embed, files=files, view=view, wait=True)
@@ -369,6 +373,101 @@ class GraphCog(commands.Cog):
         embed.set_image(url="attachment://heatmap.png")
         return embed, files
 
+    @app_commands.command(
+        name="cutoff",
+        description="Cutoff points, speed, and the projected final for a tier (text).",
+    )
+    @app_commands.allowed_installs(guilds=True, users=True)
+    @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
+    @app_commands.describe(
+        tier="Tier rank (e.g. 100).",
+        region="Game server region.",
+        event="Event (defaults to the latest).",
+    )
+    @app_commands.choices(region=REGION_CHOICES)
+    @app_commands.autocomplete(event=autocompletes.event(), tier=autocompletes.tier())
+    async def cutoff_text(
+        self,
+        interaction: discord.Interaction,
+        tier: int,
+        region: str = "default",
+        event: str | None = None,
+    ) -> None:
+        assert self.bot.holo and self.bot.user_data and self.bot.data
+        await interaction.response.defer(thinking=True)
+        region = await self._region(interaction.user.id, region)
+        ev = await self._resolve_event(region, event)
+        # default to the chapter live right now (else the latest)
+        chapter = (ev.activeChapterId or (ev.chapters[-1] if ev.chapters else None)) if ev else None
+        try:
+            data = await self.bot.holo.get_event_graph(
+                region, tier, event_id=event, chapter_id=chapter
+            )
+        except HolodoriError as e:
+            msg = e.detail if e.status == 400 and e.detail else f"Couldn't fetch cutoff: {e.detail or e.status}"
+            await interaction.followup.send(embed=embeds.error_embed(msg))
+            return
+        series = [(int(p[0]), float(p[1])) for p in (data.get("tier") or [])]
+        if len(series) < 2:
+            await interaction.followup.send(
+                embed=embeds.error_embed("Not enough cutoff data for that event/tier yet.")
+            )
+            return
+
+        last_ms, current = series[-1]
+        start = data.get("startTime") or series[0][0]
+        end = data.get("endTime") or last_ms
+        elapsed_h = max((last_ms - start) / 3_600_000, 1 / 60)
+        avg_hr = current / elapsed_h
+        # gain over the last hour of data
+        target = last_ms - 3_600_000
+        prev = next((v for t, v in reversed(series) if t <= target), series[0][1])
+        last_hr = current - prev
+        pct = (last_ms - start) / max(1, end - start) * 100
+        unit = "" if data.get("songScore") else " EP"
+
+        chap = ev.chapterMeta.get(chapter) if ev and chapter else None
+        who = f" ({chap.shortName})" if chap and chap.shortName else ""
+        title = f"{ev.name if ev else 'Event'}{who} - T{tier} Cutoff"
+
+        em = embeds.embed(
+            title=title, description=f"**Requested:** <t:{int(time.time())}:R>"
+        )
+        em.add_field(
+            name="Cutoff Statistics",
+            value=(
+                f"**Points:** {int(current):,}{unit}\n"
+                f"**Average:** {int(avg_hr):,}/hr\n"
+                f"**Last hour:** {int(last_hr):,}/hr"
+            ),
+            inline=False,
+        )
+        em.add_field(
+            name="Event Information",
+            value=(
+                f"**Started:** <t:{start // 1000}:f>\n"
+                f"**Ends:** <t:{end // 1000}:f> (<t:{end // 1000}:R>)\n"
+                f"**Progress:** {pct:.2f}%\n"
+                f"**Data as of:** <t:{last_ms // 1000}:R>"
+            ),
+            inline=False,
+        )
+        pred = data.get("prediction")
+        if pred:
+            est = f"**Estimated final:** {int(pred['final']):,}{unit}"
+            note = "*from the pace curve of past relay events; firms up as the event runs*"
+            est_value = f"{est}\n{note}"
+        elif data.get("songScore"):
+            est_value = "Not available for song-score boards."
+        else:
+            est_value = "Too early to project a final yet."
+        em.add_field(name="Point Estimation (Prediction)", value=est_value, inline=False)
+
+        logo = self.bot.holo.unsquished_image_url(ev.logo) if ev and ev.logo else None
+        if logo:
+            em.set_thumbnail(url=logo)
+        await interaction.followup.send(embed=em)
+
 
 class _GraphView(HoloView):
     """holomem chapter buttons (relay events) plus, in Song-Scores mode, a song dropdown; re-renders
@@ -389,6 +488,7 @@ class _GraphView(HoloView):
         songs: list[tuple[str, str]],
         music_id: str | None,
         predict: bool,
+        can_predict: bool = False,
         restrict_to: int,
     ) -> None:
         super().__init__(timeout=180, restrict_to=restrict_to)
@@ -407,7 +507,10 @@ class _GraphView(HoloView):
         self._songs = dict(songs)
         self._chapters = ChapterButtons(chapters_from_event(ev), chapter, self._on_chapter)
         self._chapters.add_to(self)
+        # the song dropdown (song mode) and the PREDICT toggle (total mode) are mutually exclusive,
+        # so both sit on the row just below the chapter buttons
         self._select: discord.ui.Select | None = None
+        self._predict_btn: discord.ui.Button | None = None
         if music and songs:
             self._select = discord.ui.Select(
                 placeholder="Choose a song...", row=self._chapters.rows_used
@@ -415,6 +518,25 @@ class _GraphView(HoloView):
             self._select.callback = self._on_song  # type: ignore[method-assign]
             self.add_item(self._select)
             self._sync_options()
+        elif can_predict:
+            self._predict_btn = discord.ui.Button(
+                label="PREDICT", emoji="🔮", row=self._chapters.rows_used
+            )
+            self._style_predict()
+            self._predict_btn.callback = self._on_predict  # type: ignore[method-assign]
+            self.add_item(self._predict_btn)
+
+    def _style_predict(self) -> None:
+        if self._predict_btn is not None:
+            self._predict_btn.style = (
+                discord.ButtonStyle.primary if self.predict else discord.ButtonStyle.secondary
+            )
+
+    async def _on_predict(self, interaction: discord.Interaction) -> None:
+        self.predict = not self.predict
+        self._style_predict()
+        await interaction.response.defer()
+        await self._rerender(interaction)
 
     def _sync_options(self) -> None:
         # rebuild the options every time so the picked song stays selected in the dropdown. without
@@ -436,7 +558,7 @@ class _GraphView(HoloView):
             border=self.border,
             music=self.music,
             music_id=self.music_id,
-            song_title=self._songs.get(self.music_id),
+            song_title=self._songs.get(self.music_id) if self.music_id else None,
             tz=self.tz,
             ev=self.ev,
             predict=self.predict,

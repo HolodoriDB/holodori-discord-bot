@@ -140,7 +140,9 @@ def render_graph(
         return out.getvalue()
 
     W, H = 1000 * _SS, 560 * _SS
-    ml, mr, mt, mb = 100 * _SS, 30 * _SS, 74 * _SS, 64 * _SS
+    # mt clears the top-right legend (title row + up to 3 entries at 24px each) so the plotted line
+    # never runs under the "Predicted ~X" swatch
+    ml, mr, mt, mb = 100 * _SS, 30 * _SS, 108 * _SS, 64 * _SS
     x0, x1 = ml, W - mr
     y0, y1 = mt, H - mb
 

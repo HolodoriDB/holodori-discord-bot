@@ -1,7 +1,9 @@
-"""RoboNene-style text leaderboard, rendered as one monospace code block.
+"""RoboNene-style text leaderboard, rendered as one ```ansi code block.
 
-Columns T (rank + tier move), Name, Score, Change; the name column is squeezed to a target width and
-every column pads by DISPLAY width (CJK = 2 cells). Ported from RoboNene's generateRankingTextChanges
+Columns # (rank + coloured move tag: green up / red down), Name, Score, +/hr; the name column is
+squeezed so the WHOLE row (incl. separators) fits the target width, and every column pads by DISPLAY
+width (CJK = 2 cells). ansi escapes are zero-width so they must NOT count toward padding (see
+_rank_cell). Ported from RoboNene's generateRankingTextChanges
 (github.com/Ai0796/RoboNene). Known limitation: Discord renders CJK/Hangul at a non-2x width (and it
 differs desktop vs mobile), so a CJK name shifts whatever column follows it - true in inline `code`
 too, so it's NOT an inline-vs-block thing. The only reliable text fix is to make the name the LAST
@@ -68,6 +70,23 @@ def _change_str(v: int | None) -> str:
     return "-" if v is None else f"{v:,}"
 
 
+_ESC = ""  # for the ```ansi block: green ↑ / red ↓ move tags
+
+
+def _rank_cell(rank: int, change: int, width: int) -> str:
+    # "6↑1" with the move tag coloured (green up / red down), left-aligned and padded to `width` by
+    # the tag's VISIBLE length - the ansi escapes are zero-width so must NOT count toward padding
+    tag = _tier_tag(change)
+    if change > 0:
+        colored = f"{_ESC}[32m{tag}{_ESC}[0m"
+    elif change < 0:
+        colored = f"{_ESC}[31m{tag}{_ESC}[0m"
+    else:
+        colored = tag
+    pad = max(0, width - _width(f"{rank}{tag}"))
+    return f"{rank}{colored}{' ' * pad}"
+
+
 def _clean(name: str) -> str:
     return _CLEAN.sub("", name).replace("`", "'").strip() or "?"
 
@@ -102,14 +121,14 @@ def format_leaderboard(rows: list[LBRow], *, mobile: bool = False) -> str:
             change_lbl.rjust(change_w),
         )
     ]
-    for r, name, rk in zip(rows, names, ranks):
+    for r, name in zip(rows, names):
         out.append(
             row(
-                _fit(rk, rank_w),  # rank+tag, left-aligned
+                _rank_cell(r.rank, r.rank_change, rank_w),  # rank + coloured move tag, left-aligned
                 _fit(name, name_w),  # truncate + pad by display width so CJK names stay aligned
                 f"{r.score:,}".rjust(score_w),
                 _change_str(r.score_change).rjust(change_w),
                 star=r.is_you,
             )
         )
-    return "```\n" + "\n".join(out) + "\n```"
+    return "```ansi\n" + "\n".join(out) + "\n```"
