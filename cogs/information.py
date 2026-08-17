@@ -38,7 +38,7 @@ class _HelpView(HoloView):
     def __init__(self) -> None:
         super().__init__(timeout=600)  # no restrict_to -> anyone can open the list
 
-    @discord.ui.button(label="Text Commands", emoji="⌨️", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Text Commands", style=discord.ButtonStyle.secondary)
     async def text_commands(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
