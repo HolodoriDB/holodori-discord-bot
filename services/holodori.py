@@ -314,6 +314,11 @@ class HolodoriClient:
         data = await self._get("/api/events/tiers")
         return data.get("tiers") or [] if isinstance(data, dict) else []
 
+    async def search_players(self, query: str, region: str | None = None) -> list[dict]:
+        # fuzzy player lookup over the current top-100 (all regions unless one given); romanized
+        data = await self._get("/api/events/player_search", q=query, region=region)
+        return data.get("players") or [] if isinstance(data, dict) else []
+
     # --- misc data ---
 
     async def get_items(self, lang: str | None = None) -> list[dict]:

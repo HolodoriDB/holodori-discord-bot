@@ -160,6 +160,10 @@ class LeaderboardView(HoloView):
         embed.set_footer(text=f"Page {self.page + 1}/{self.total_pages}")
         return embed
 
+    def render_embed(self) -> discord.Embed:
+        # the initial page embed, for a caller that sends the view itself (e.g. a %-prefix command)
+        return self._embed()
+
     async def send_initial(self, interaction: discord.Interaction) -> None:
         self.message = await interaction.followup.send(embed=self._embed(), view=self, wait=True)
 

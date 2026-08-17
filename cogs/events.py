@@ -9,11 +9,12 @@ from discord.ext import commands
 
 from data.models import EventInfo
 from data.search import preprocess
-from helpers import details, embeds
+from helpers import details, embeds, text_commands
 from helpers.aliases import alias_field
 from helpers.autocompletes import REGION_CHOICES, REGION_LABELS, autocompletes
 
 if TYPE_CHECKING:
+    from helpers.lb_view import LeaderboardView
     from main import HolodoriBot
 
 
@@ -141,37 +142,25 @@ class EventsCog(commands.Cog):
         embed.set_footer(text="Times are shown in your local time.")
         await interaction.followup.send(embed=embed)
 
-    @event.command(name="leaderboard", description="Top rankings for an event.")
-    @app_commands.describe(event="Event (defaults to the latest).", region="Game server region.")
-    @app_commands.choices(region=REGION_CHOICES)
-    @app_commands.autocomplete(event=autocompletes.event())
-    async def leaderboard(
-        self,
-        interaction: discord.Interaction,
-        event: str | None = None,
-        region: str = "default",
-    ) -> None:
+    async def _leaderboard_view(
+        self, *, user_id: int, region: str, event: str | None = None
+    ) -> tuple["LeaderboardView | None", discord.Embed | None]:
+        # the shared body of `/event leaderboard` and `%leaderboard`: (view, None) or (None, error)
         from helpers.chapter_buttons import chapters_from_event
         from helpers.lb_view import LeaderboardView
 
-        await interaction.response.defer(thinking=True)
         assert self.bot.holo
-        region = await self._region(interaction.user.id, region)
-        lang = await self._lang(interaction.user.id)
-        data = await self.bot.holo.get_event_leaderboard(
-            region, event_id=event, language=lang
-        )
+        region = await self._region(user_id, region)
+        lang = await self._lang(user_id)
+        data = await self.bot.holo.get_event_leaderboard(region, event_id=event, language=lang)
         rankings = data.get("rankings", [])
         if not rankings:
-            await interaction.followup.send(
-                embed=embeds.error_embed("No ranking data for that event yet.")
-            )
-            return
+            return None, embeds.error_embed("No ranking data for that event yet.")
         eid = data.get("eventId")
         current_chapter = data.get("chapterId")
 
         # relay events get a row of holomem chapter buttons; find the served event's chapter meta
-        ev = next((e for e in await self._events(region, interaction.user.id) if e.eventId == eid), None)
+        ev = next((e for e in await self._events(region, user_id) if e.eventId == eid), None)
         chapters = chapters_from_event(ev)
 
         async def fetch(cid: str) -> list[dict]:
@@ -186,12 +175,52 @@ class EventsCog(commands.Cog):
             rows=rankings,
             title=title,
             thumb=logo,
-            restrict_to=interaction.user.id,
+            restrict_to=user_id,
             chapters=chapters,
             current_chapter=current_chapter,
             fetch=fetch,
         )
+        return view, None
+
+    @event.command(name="leaderboard", description="Top rankings for an event.")
+    @app_commands.describe(event="Event (defaults to the latest).", region="Game server region.")
+    @app_commands.choices(region=REGION_CHOICES)
+    @app_commands.autocomplete(event=autocompletes.event())
+    async def leaderboard(
+        self,
+        interaction: discord.Interaction,
+        event: str | None = None,
+        region: str = "default",
+    ) -> None:
+        await interaction.response.defer(thinking=True)
+        view, err = await self._leaderboard_view(
+            user_id=interaction.user.id, region=region, event=event
+        )
+        if err is not None:
+            await interaction.followup.send(embed=err)
+            return
+        assert view is not None
         await view.send_initial(interaction)
+
+    @commands.command(name="leaderboard", aliases=["lb"])
+    async def p_leaderboard(self, ctx: commands.Context, *args: str) -> None:
+        # %leaderboard [region] - always the current event; region optional, nothing else
+        region, tier, leftover = text_commands.parse_region_tier(list(args))
+        if tier is not None or leftover:
+            await ctx.reply(
+                embed=text_commands.help_embed(
+                    "leaderboard", "[region]", any_order=False, aliases=["lb"]
+                ),
+                mention_author=False,
+            )
+            return
+        async with ctx.typing():
+            view, err = await self._leaderboard_view(user_id=ctx.author.id, region=region or "default")
+        if err is not None:
+            await ctx.reply(embed=err, mention_author=False)
+            return
+        assert view is not None
+        view.message = await ctx.reply(embed=view.render_embed(), view=view, mention_author=False)
 
 
 async def setup(bot: HolodoriBot) -> None:

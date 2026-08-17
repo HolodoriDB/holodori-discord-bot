@@ -92,6 +92,29 @@ class HolodoriBot(commands.Bot):
             except discord.HTTPException as e:
                 self.warn(f"Couldn't fetch app commands: {e}")
 
+    async def on_command_error(
+        self, context: commands.Context, exception: commands.CommandError
+    ) -> None:
+        # %-prefix commands: ignore an unknown command or a failed check (e.g. the ban gate, which
+        # already replied), report anything else without crashing the command handler
+        if isinstance(exception, (commands.CommandNotFound, commands.CheckFailure)):
+            return
+        if isinstance(exception, commands.CommandOnCooldown):
+            await context.reply(
+                f"Command is on cooldown! Try again in **{exception.retry_after:.2f}**s.",
+                mention_author=False,
+            )
+            return
+        err = getattr(exception, "original", exception)
+        try:
+            await context.reply(
+                embed=embeds.error_embed(f"Something went wrong!\n```{err}```"),
+                mention_author=False,
+            )
+        except discord.HTTPException:
+            pass
+        self.traceback(err)
+
     async def close(self) -> None:
         if self.data:
             await self.data.stop()
@@ -133,7 +156,7 @@ def build_bot(config: Config) -> HolodoriBot:
     intents.message_content = True  # needed for the -prefix guessing chat commands
     bot = HolodoriBot(
         config,
-        command_prefix=commands.when_mentioned,
+        command_prefix=commands.when_mentioned_or("%"),
         help_command=None,
         intents=intents,
         owner_ids=set(config["discord"]["owner_ids"]),
@@ -160,6 +183,29 @@ def build_bot(config: Config) -> HolodoriBot:
                 pass
         return not banned
 
+    async def _prefix_ban_check(ctx: commands.Context) -> bool:
+        # same ban gate as the slash commands, for the %-prefix text commands
+        if bot.user_data is None:
+            return True
+        uid = ctx.author.id
+        if uid in bot.cache.discord_bans:
+            banned = bot.cache.discord_bans[uid]
+        else:
+            banned = await bot.user_data.get_banned(uid)
+            bot.cache.discord_bans[uid] = banned
+        if banned:
+            try:
+                await ctx.reply(
+                    embed=embeds.error_embed(
+                        "You're banned from the bot. Join the support server to appeal."
+                    ),
+                    mention_author=False,
+                )
+            except discord.HTTPException:
+                pass
+        return not banned
+
+    bot.add_check(_prefix_ban_check)
     bot.tree.interaction_check = _ban_check
     bot.tree.on_error = _on_tree_error
     return bot

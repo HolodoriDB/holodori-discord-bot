@@ -9,7 +9,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from helpers import embeds, timezones
+from helpers import embeds, text_commands, timezones
 from helpers.autocompletes import REGION_CHOICES, REGION_LABELS, autocompletes
 from helpers.chapter_buttons import ChapterButtons, chapters_from_event
 from helpers.views import HoloView
@@ -139,42 +139,23 @@ class GraphCog(commands.Cog):
         embed.set_image(url="attachment://graph.png")
         return embed, files
 
-    @graph.command(name="cutoff", description="Graph a tier's cutoff over the event.")
-    @app_commands.describe(
-        tier="Tier rank to graph (e.g. 100).",
-        region="Game server region.",
-        event="Event (defaults to the latest).",
-        mode="Total event score or per-song scores.",
-        border="Use the tier border line.",
-        predict="Project the final cutoff (relay events only).",
-        timezone="Timezone for the time axis (defaults to your setting).",
-    )
-    @app_commands.choices(region=REGION_CHOICES, mode=_MODE_CHOICES)
-    @app_commands.autocomplete(event=autocompletes.event(), tier=autocompletes.tier())
-    async def cutoff(
+    async def _graph_payload(
         self,
-        interaction: discord.Interaction,
+        *,
+        user_id: int,
+        region: str,
         tier: int,
-        region: str = "default",
         event: str | None = None,
         mode: str = "total",
         border: bool = False,
         predict: bool = False,
         timezone: str | None = None,
-    ) -> None:
+    ) -> tuple[discord.Embed, list[discord.File], _GraphView | None]:
+        # the shared body of `/graph cutoff` and `%graph`: resolve, render, and build the interactive
+        # view (or None when there's nothing to interact with). the caller sends it.
         assert self.bot.holo and self.bot.user_data and self.bot.data
-        if timezone is not None and timezones.canonical(timezone) is None:
-            await interaction.response.send_message(
-                embed=embeds.error_embed(
-                    f"`{timezone}` isn't a valid timezone. Use a common one "
-                    f"({timezones.COMMON}) or an IANA name like `Europe/Paris`."
-                ),
-                ephemeral=True,
-            )
-            return
-        await interaction.response.defer(thinking=True)
-        region = await self._region(interaction.user.id, region)
-        tz_name = timezone or await self.bot.user_data.get_settings(interaction.user.id, "timezone")
+        region = await self._region(user_id, region)
+        tz_name = timezone or await self.bot.user_data.get_settings(user_id, "timezone")
         tz = timezones.resolve(tz_name)
         ev = await self._resolve_event(region, event)
         # default to the chapter live right now (else the latest)
@@ -213,8 +194,7 @@ class GraphCog(commands.Cog):
         chapters = chapters_from_event(ev)
         can_predict = (not music) and ev is not None and not ev.isSongScore
         if not files or (len(chapters) <= 1 and not songs and not can_predict):
-            await interaction.followup.send(embed=embed, files=files)
-            return
+            return embed, files, None
         view = _GraphView(
             self,
             region=region,
@@ -229,9 +209,103 @@ class GraphCog(commands.Cog):
             music_id=music_id,
             predict=predict,
             can_predict=can_predict,
-            restrict_to=interaction.user.id,
+            restrict_to=user_id,
         )
+        return embed, files, view
+
+    @graph.command(name="cutoff", description="Graph a tier's cutoff over the event.")
+    @app_commands.describe(
+        tier="Tier rank to graph (e.g. 100).",
+        region="Game server region.",
+        event="Event (defaults to the latest).",
+        mode="Total event score or per-song scores.",
+        border="Use the tier border line.",
+        predict="Project the final cutoff (relay events only).",
+        timezone="Timezone for the time axis (defaults to your setting).",
+    )
+    @app_commands.choices(region=REGION_CHOICES, mode=_MODE_CHOICES)
+    @app_commands.autocomplete(event=autocompletes.event(), tier=autocompletes.tier())
+    async def cutoff(
+        self,
+        interaction: discord.Interaction,
+        tier: int,
+        region: str = "default",
+        event: str | None = None,
+        mode: str = "total",
+        border: bool = False,
+        predict: bool = False,
+        timezone: str | None = None,
+    ) -> None:
+        assert self.bot.holo and self.bot.user_data and self.bot.data
+        if timezone is not None and timezones.canonical(timezone) is None:
+            await interaction.response.send_message(
+                embed=embeds.error_embed(
+                    f"`{timezone}` isn't a valid timezone. Use a common one "
+                    f"({timezones.COMMON}) or an IANA name like `Europe/Paris`."
+                ),
+                ephemeral=True,
+            )
+            return
+        await interaction.response.defer(thinking=True)
+        embed, files, view = await self._graph_payload(
+            user_id=interaction.user.id,
+            region=region,
+            tier=tier,
+            event=event,
+            mode=mode,
+            border=border,
+            predict=predict,
+            timezone=timezone,
+        )
+        if view is None:
+            await interaction.followup.send(embed=embed, files=files)
+            return
         view.message = await interaction.followup.send(embed=embed, files=files, view=view, wait=True)
+
+    async def _heatmap_payload(
+        self,
+        *,
+        user_id: int,
+        region: str,
+        tier: int,
+        event: str | None = None,
+        by_tier: bool | None = None,
+        timezone: str | None = None,
+    ) -> tuple[discord.Embed, list[discord.File], _HeatmapView | None]:
+        # the shared body of `/heatmap` and `%heatmap` (chapter-switch view or None). the caller sends.
+        assert self.bot.holo and self.bot.user_data and self.bot.data
+        region = await self._region(user_id, region)
+        tz_name = timezone or await self.bot.user_data.get_settings(user_id, "timezone")
+        tz = timezones.resolve(tz_name)
+        ev = await self._resolve_event(region, event)
+        # default to the chapter live right now (else the latest)
+        chapter = (ev.activeChapterId or (ev.chapters[-1] if ev.chapters else None)) if ev else None
+        player_mode = (tier <= 100) if by_tier is None else (not by_tier)
+
+        embed, files = await self.render_heatmap(
+            region=region,
+            tier=tier,
+            event_id=event,
+            chapter=chapter,
+            player_mode=player_mode,
+            tz=tz,
+            ev=ev,
+        )
+        chapters = chapters_from_event(ev)
+        if not files or len(chapters) <= 1:
+            return embed, files, None
+        view = _HeatmapView(
+            self,
+            region=region,
+            tier=tier,
+            event_id=event,
+            chapter=chapter,
+            player_mode=player_mode,
+            tz=tz,
+            ev=ev,
+            restrict_to=user_id,
+        )
+        return embed, files, view
 
     @app_commands.command(
         name="heatmap",
@@ -278,38 +352,17 @@ class GraphCog(commands.Cog):
             )
             return
         await interaction.response.defer(thinking=True)
-        region = await self._region(interaction.user.id, region)
-        tz_name = timezone or await self.bot.user_data.get_settings(interaction.user.id, "timezone")
-        tz = timezones.resolve(tz_name)
-        ev = await self._resolve_event(region, event)
-        # default to the chapter live right now (else the latest)
-        chapter = (ev.activeChapterId or (ev.chapters[-1] if ev.chapters else None)) if ev else None
-        player_mode = (tier <= 100) if by_tier is None else (not by_tier)
-
-        embed, files = await self.render_heatmap(
+        embed, files, view = await self._heatmap_payload(
+            user_id=interaction.user.id,
             region=region,
             tier=tier,
-            event_id=event,
-            chapter=chapter,
-            player_mode=player_mode,
-            tz=tz,
-            ev=ev,
+            event=event,
+            by_tier=by_tier,
+            timezone=timezone,
         )
-        chapters = chapters_from_event(ev)
-        if not files or len(chapters) <= 1:
+        if view is None:
             await interaction.followup.send(embed=embed, files=files)
             return
-        view = _HeatmapView(
-            self,
-            region=region,
-            tier=tier,
-            event_id=event,
-            chapter=chapter,
-            player_mode=player_mode,
-            tz=tz,
-            ev=ev,
-            restrict_to=interaction.user.id,
-        )
         view.message = await interaction.followup.send(embed=embed, files=files, view=view, wait=True)
 
     async def render_heatmap(
@@ -397,7 +450,18 @@ class GraphCog(commands.Cog):
     ) -> None:
         assert self.bot.holo and self.bot.user_data and self.bot.data
         await interaction.response.defer(thinking=True)
-        region = await self._region(interaction.user.id, region)
+        em = await self._cutoff_text_embed(
+            user_id=interaction.user.id, region=region, tier=tier, event=event
+        )
+        await interaction.followup.send(embed=em)
+
+    async def _cutoff_text_embed(
+        self, *, user_id: int, region: str, tier: int, event: str | None = None
+    ) -> discord.Embed:
+        # the shared body of `/cutoff` and `%cutoff`: a text stats + prediction card (no view).
+        # returns an error embed (same wording as the slash command) on a bad tier / no data.
+        assert self.bot.holo and self.bot.user_data
+        region = await self._region(user_id, region)
         ev = await self._resolve_event(region, event)
         # default to the chapter live right now (else the latest)
         chapter = (ev.activeChapterId or (ev.chapters[-1] if ev.chapters else None)) if ev else None
@@ -407,14 +471,10 @@ class GraphCog(commands.Cog):
             )
         except HolodoriError as e:
             msg = e.detail if e.status == 400 and e.detail else f"Couldn't fetch cutoff: {e.detail or e.status}"
-            await interaction.followup.send(embed=embeds.error_embed(msg))
-            return
+            return embeds.error_embed(msg)
         series = [(int(p[0]), float(p[1])) for p in (data.get("tier") or [])]
         if len(series) < 2:
-            await interaction.followup.send(
-                embed=embeds.error_embed("Not enough cutoff data for that event/tier yet.")
-            )
-            return
+            return embeds.error_embed("Not enough cutoff data for that event/tier yet.")
 
         last_ms, current = series[-1]
         start = data.get("startTime") or series[0][0]
@@ -481,7 +541,118 @@ class GraphCog(commands.Cog):
         logo = self.bot.holo.unsquished_image_url(ev.logo) if ev and ev.logo else None
         if logo:
             em.set_thumbnail(url=logo)
-        await interaction.followup.send(embed=em)
+        return em
+
+    # --- %-prefix text commands: mirror the slash commands, region + tier in any order ---
+
+    @commands.command(name="cutoff")
+    async def p_cutoff(self, ctx: commands.Context, *args: str) -> None:
+        region, tier, leftover = text_commands.parse_region_tier(list(args))
+        if tier is None or leftover:
+            await ctx.reply(
+                embed=text_commands.help_embed("cutoff", "[region] {tier}", any_order=True, aliases=[]),
+                mention_author=False,
+            )
+            return
+        async with ctx.typing():
+            em = await self._cutoff_text_embed(user_id=ctx.author.id, region=region or "default", tier=tier)
+        await ctx.reply(embed=em, mention_author=False)
+
+    @commands.command(name="graph", aliases=["eph"])
+    async def p_graph(self, ctx: commands.Context, *args: str) -> None:
+        region, tier, leftover = text_commands.parse_region_tier(list(args))
+        if tier is None or leftover:
+            await ctx.reply(
+                embed=text_commands.help_embed("graph", "[region] {tier}", any_order=True, aliases=["eph"]),
+                mention_author=False,
+            )
+            return
+        async with ctx.typing():
+            embed, files, view = await self._graph_payload(
+                user_id=ctx.author.id, region=region or "default", tier=tier
+            )
+        msg = await ctx.reply(embed=embed, files=files, view=view, mention_author=False)
+        if view is not None:
+            view.message = msg
+
+    @commands.command(name="heatmap")
+    async def p_heatmap(self, ctx: commands.Context, *args: str) -> None:
+        region, tier, leftover = text_commands.parse_region_tier(list(args))
+        if tier is None or leftover:
+            await ctx.reply(
+                embed=text_commands.help_embed("heatmap", "[region] {tier}", any_order=True, aliases=[]),
+                mention_author=False,
+            )
+            return
+        async with ctx.typing():
+            embed, files, view = await self._heatmap_payload(
+                user_id=ctx.author.id, region=region or "default", tier=tier
+            )
+        msg = await ctx.reply(embed=embed, files=files, view=view, mention_author=False)
+        if view is not None:
+            view.message = msg
+
+    def _player_card(
+        self, player: dict, *, restrict_to: int
+    ) -> tuple[discord.Embed, "_PlayerCardView"]:
+        # {Name} - {region} card: just the Points stat, plus Graph / Heatmap / Cutoff buttons that
+        # act on this player's current rank+region
+        region = player["region"]
+        embed = embeds.embed(title=f"{player['name']} - {REGION_LABELS.get(region, region)}")
+        pts = player.get("points")
+        embed.add_field(
+            name="Player Statistics",
+            value=f"**Points:** {int(pts):,} EP" if pts is not None else "**Points:** —",
+            inline=False,
+        )
+        embed.set_footer(text=f"Currently rank {player['rank']}")
+        view = _PlayerCardView(self, region=region, rank=int(player["rank"]), restrict_to=restrict_to)
+        return embed, view
+
+    @commands.command(name="player")
+    async def p_player(self, ctx: commands.Context, *, query: str = "") -> None:
+        # %player {name} - greedily takes the whole rest as the name; searches every region's t100
+        query = query.strip()
+        if not query:
+            await ctx.reply(
+                embed=text_commands.help_embed("player", "{name}", any_order=False, aliases=[]),
+                mention_author=False,
+            )
+            return
+        assert self.bot.holo
+        async with ctx.typing():
+            try:
+                results = await self.bot.holo.search_players(query)
+            except HolodoriError:
+                results = []
+        if not results:
+            await ctx.reply(
+                embed=embeds.error_embed(
+                    f"No player matching **{discord.utils.escape_markdown(query)}** in the "
+                    "current top 100 on any region."
+                ),
+                mention_author=False,
+            )
+            return
+        # identical / very-close matches (e.g. the same name on two regions) -> ask which one
+        top = results[0]
+        close = [r for r in results if top["match"] - r["match"] <= 6][:10]
+        if len(close) >= 2:
+            view = _PlayerPickView(self, close, restrict_to=ctx.author.id)
+            view.message = await ctx.reply(
+                embed=embeds.embed(
+                    title="Multiple players found",
+                    description=(
+                        f"More than one player matches **{discord.utils.escape_markdown(query)}**. "
+                        "Pick one below."
+                    ),
+                ),
+                view=view,
+                mention_author=False,
+            )
+            return
+        embed, view = self._player_card(top, restrict_to=ctx.author.id)
+        view.message = await ctx.reply(embed=embed, view=view, mention_author=False)
 
 
 class _GraphView(HoloView):
@@ -652,6 +823,85 @@ class _HeatmapView(HoloView):
         await interaction.edit_original_response(
             embed=embed, attachments=files, view=self
         )
+
+
+class _PlayerCardView(HoloView):
+    """the %player card's buttons: view this player's graph, heatmap, or cutoff stats (each acts on
+    their current rank+region, and posts as a follow-up so the card itself stays put)."""
+
+    def __init__(self, cog: GraphCog, *, region: str, rank: int, restrict_to: int) -> None:
+        super().__init__(timeout=180, restrict_to=restrict_to)
+        self.cog = cog
+        self.region = region
+        self.rank = rank
+
+    async def _send(
+        self,
+        interaction: discord.Interaction,
+        embed: discord.Embed,
+        files: list[discord.File],
+        view: HoloView | None,
+    ) -> None:
+        if view is None:
+            await interaction.followup.send(embed=embed, files=files)
+            return
+        view.message = await interaction.followup.send(
+            embed=embed, files=files, view=view, wait=True
+        )
+
+    @discord.ui.button(label="Graph", emoji="📈", style=discord.ButtonStyle.primary)
+    async def graph_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.defer(thinking=True)
+        embed, files, view = await self.cog._graph_payload(
+            user_id=interaction.user.id, region=self.region, tier=self.rank
+        )
+        await self._send(interaction, embed, files, view)
+
+    @discord.ui.button(label="Heatmap", emoji="🔥", style=discord.ButtonStyle.primary)
+    async def heatmap_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.defer(thinking=True)
+        embed, files, view = await self.cog._heatmap_payload(
+            user_id=interaction.user.id, region=self.region, tier=self.rank
+        )
+        await self._send(interaction, embed, files, view)
+
+    @discord.ui.button(label="Cutoff", emoji="✂️", style=discord.ButtonStyle.primary)
+    async def cutoff_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.defer(thinking=True)
+        em = await self.cog._cutoff_text_embed(
+            user_id=interaction.user.id, region=self.region, tier=self.rank
+        )
+        await interaction.followup.send(embed=em)
+
+
+class _PlayerPickView(HoloView):
+    """disambiguation dropdown when a %player query matches more than one player (e.g. the same
+    name on two regions); picking one swaps the message to that player's card."""
+
+    def __init__(self, cog: GraphCog, candidates: list[dict], *, restrict_to: int) -> None:
+        super().__init__(timeout=120, restrict_to=restrict_to)
+        self.cog = cog
+        self.candidates = candidates
+        options = [
+            discord.SelectOption(
+                label=str(c["name"])[:100],
+                description=(
+                    f"{REGION_LABELS.get(c['region'], c['region'])} · Rank {c['rank']}"
+                    + (f" · {int(c['points']):,} EP" if c.get("points") is not None else "")
+                )[:100],
+                value=str(i),
+            )
+            for i, c in enumerate(candidates)
+        ]
+        self._select = discord.ui.Select(placeholder="Which player?", options=options)
+        self._select.callback = self._on_pick  # type: ignore[method-assign]
+        self.add_item(self._select)
+
+    async def _on_pick(self, interaction: discord.Interaction) -> None:
+        idx = int(interaction.data["values"][0])  # type: ignore[index,arg-type]
+        embed, view = self.cog._player_card(self.candidates[idx], restrict_to=self.restrict_to or 0)
+        await interaction.response.edit_message(embed=embed, view=view)
+        view.message = interaction.message
 
 
 async def setup(bot: HolodoriBot) -> None:
