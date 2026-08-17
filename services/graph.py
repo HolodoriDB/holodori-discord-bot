@@ -44,6 +44,8 @@ _GRID = (44, 48, 58, 255)
 _TEXT = (242, 245, 250, 255)
 _MUTED = (150, 162, 178, 255)
 _PRED = (255, 190, 90, 255)  # dashed projection line
+_PRED_FILL = (255, 190, 90, 46)  # uncertainty cone fill (translucent, composited over the plot)
+_PRED_EDGE = (255, 190, 90, 150)  # thin lines marking the cone's edges
 _SS = 2  # supersample
 
 _HOUR_MS = 3_600_000
@@ -129,8 +131,9 @@ def render_graph(
 ) -> bytes:
     tz = tz or datetime.timezone.utc
     points = [(int(x), float(y)) for _, series, _ in lines for x, y in series]
-    if prediction:  # let the projection widen the axes so it fits on the plot
+    if prediction:  # let the projection (and its cone's top edge) widen the axes so it all fits
         points += [(int(x), float(y)) for x, y in prediction["points"]]
+        points += [(int(x), float(hi)) for x, _lo, hi in (prediction.get("band") or [])]
     if not points:
         img = Image.new("RGBA", (600, 200), _BG)
         d = ImageDraw.Draw(img)
@@ -176,6 +179,21 @@ def render_graph(
         x = px(ms)
         draw.line([(x, y0), (x, y1)], fill=_GRID, width=_SS)
         draw.text((x, y1 + 8 * _SS), _fmt_time(ms, tz), font=f_axis, fill=_MUTED, anchor="mt")
+
+    # uncertainty cone: a translucent band that fans out from the last real point to the event end
+    # (widest), with thin edge lines. drawn under the series/projection so those stay crisp on top.
+    band = (prediction or {}).get("band") if prediction else None
+    if band:
+        upper = [(px(int(x)), py(float(hi))) for x, _lo, hi in band]
+        lower = [(px(int(x)), py(float(lo))) for x, lo, _hi in band]
+        poly = upper + lower[::-1]
+        if len(poly) >= 3:
+            overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+            ImageDraw.Draw(overlay).polygon(poly, fill=_PRED_FILL)
+            img = Image.alpha_composite(img, overlay)
+            draw = ImageDraw.Draw(img)
+            draw.line(upper, fill=_PRED_EDGE, width=_SS)
+            draw.line(lower, fill=_PRED_EDGE, width=_SS)
 
     for name, series, color in lines:
         pts = [(px(int(x)), py(float(y))) for x, y in series]

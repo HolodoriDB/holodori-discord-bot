@@ -122,8 +122,10 @@ class GraphCog(commands.Cog):
         if last_ms:
             parts.append(f"**Last Data Update:** <t:{last_ms // 1000}:R>")
         if predict and prediction:
+            pm = prediction.get("plusMinus")
+            pm_str = f" ± {int(pm):,}" if pm else ""
             parts.append(
-                f"**Predicted T{tier} final:** {prediction['final']:,} EP "
+                f"**Predicted T{tier} final:** {prediction['final']:,}{pm_str} EP "
                 f"(<t:{prediction['endTime'] // 1000}:R>)"
             )
         elif predict_note:
@@ -454,9 +456,13 @@ class GraphCog(commands.Cog):
         )
         pred = data.get("prediction")
         if pred:
-            est = f"**Estimated final:** {int(pred['final']):,}{unit}"
-            note = "*from the pace curve of past relay events; firms up as the event runs*"
-            est_value = f"{est}\n{note}"
+            pm = pred.get("plusMinus")
+            est_value = f"**Estimated final:** {int(pred['final']):,}{unit}"
+            if pm:
+                est_value += f" (± {int(pm):,})"
+            lo, hi = pred.get("finalLow"), pred.get("finalHigh")
+            if lo is not None and hi is not None:
+                est_value += f"\n**Range:** {int(lo):,} to {int(hi):,}{unit}"
         elif data.get("songScore"):
             est_value = "Not available for song-score boards."
         else:

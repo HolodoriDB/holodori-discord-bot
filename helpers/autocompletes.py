@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import TYPE_CHECKING, Awaitable, Callable
 
@@ -31,18 +32,25 @@ class Autocompletes:
         self.holodori: HolodoriData | None = None
         self._tiers: list[tuple[int, str]] = []  # (rank, "US/AS/JP")
         self._tiers_at = 0.0
+        self._tiers_task: asyncio.Task[None] | None = None
 
-    async def _tier_list(self) -> list[tuple[int, str]]:
-        # border ranks change rarely, so cache the cross-region set for a while
+    def _refresh_tiers_bg(self) -> None:
+        # the autocomplete has a ~3s Discord deadline and fires on every keystroke, so it must NEVER
+        # await the network - refresh the border cutoffs in the background and serve the cache as-is
         now = time.time()
         if self._tiers and now - self._tiers_at < 600:
-            return self._tiers
+            return
+        if not self.holodori or (self._tiers_task and not self._tiers_task.done()):
+            return
+        self._tiers_task = asyncio.create_task(self._reload_tiers())
+
+    async def _reload_tiers(self) -> None:
         if not self.holodori:
-            return self._tiers
+            return
         try:
             data = await self.holodori.client.get_event_tiers()
         except Exception:
-            return self._tiers
+            return
         tiers: list[tuple[int, str]] = []
         for t in data:
             if t.get("rank") is None:
@@ -52,18 +60,18 @@ class Autocompletes:
             label = "" if len(regs) >= len(REGIONS) else "/".join(REGION_ABBR.get(r, r.upper()) for r in regs)
             tiers.append((int(t["rank"]), label))
         self._tiers = tiers
-        self._tiers_at = now
-        return self._tiers
+        self._tiers_at = time.time()
 
     def tier(self) -> AutocompleteIntCb:
         async def cb(interaction: discord.Interaction, current: str):
+            self._refresh_tiers_bg()  # non-blocking; borders fill in on a later keystroke
             q = current.strip()
             if q[:1] in ("T", "t"):  # accept both "T1" and "1"
                 q = q[1:].strip()
             # ranks 1-100 are individual players (all regions, no tag); borders are the cutoffs.
             # merged + sorted -> ascending (top rank 1 first, down to the biggest cutoff)
             merged: dict[int, str] = {r: "" for r in range(1, 101)}
-            for rank, label in await self._tier_list():
+            for rank, label in self._tiers:
                 merged[rank] = label  # border label wins; adds the cutoff ranks (> 100)
             out: list[app_commands.Choice[int]] = []
             for rank, label in sorted(merged.items()):
