@@ -425,6 +425,14 @@ class GraphCog(commands.Cog):
         target = last_ms - 3_600_000
         prev = next((v for t, v in reversed(series) if t <= target), series[0][1])
         last_hr = current - prev
+        # biggest gain over any rolling 1-hour window (two-pointer over the sorted series)
+        peak_hr = last_hr
+        lead = 0
+        for t, v in series:
+            while lead + 1 < len(series) and series[lead + 1][0] <= t - 3_600_000:
+                lead += 1
+            if series[lead][0] <= t - 3_600_000:
+                peak_hr = max(peak_hr, v - series[lead][1])
         pct = (last_ms - start) / max(1, end - start) * 100
         unit = "" if data.get("songScore") else " EP"
 
@@ -440,7 +448,8 @@ class GraphCog(commands.Cog):
             value=(
                 f"**Points:** {int(current):,}{unit}\n"
                 f"**Average:** {int(avg_hr):,}/hr\n"
-                f"**Last hour:** {int(last_hr):,}/hr"
+                f"**Last hour:** {int(last_hr):,}/hr\n"
+                f"**Peak gain:** {int(peak_hr):,}/hr"
             ),
             inline=False,
         )
@@ -457,12 +466,12 @@ class GraphCog(commands.Cog):
         pred = data.get("prediction")
         if pred:
             pm = pred.get("plusMinus")
-            est_value = f"**Estimated final:** {int(pred['final']):,}{unit}"
+            est_value = f"**Estimated final:** `{int(pred['final']):,}{unit}`"
             if pm:
-                est_value += f" (± {int(pm):,})"
+                est_value += f" (± `{int(pm):,}`)"
             lo, hi = pred.get("finalLow"), pred.get("finalHigh")
             if lo is not None and hi is not None:
-                est_value += f"\n**Range:** {int(lo):,} to {int(hi):,}{unit}"
+                est_value += f"\n**Range:** `{int(lo):,}` to `{int(hi):,}`{unit}"
         elif data.get("songScore"):
             est_value = "Not available for song-score boards."
         else:
