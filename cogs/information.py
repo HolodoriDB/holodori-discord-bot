@@ -9,9 +9,40 @@ from discord import app_commands
 from discord.ext import commands
 
 from helpers import embeds
+from helpers.views import HoloView
 
 if TYPE_CHECKING:
     from main import HolodoriBot
+
+
+def _text_commands_embed() -> discord.Embed:
+    # the %-prefix commands, listed for the /help "Text Commands" button. region + tier are accepted
+    # in any order; regions are fuzzy (US/AS/JP), tiers are 1 / t100 / 500 / ...
+    return embeds.embed(
+        title="Text Commands",
+        description=(
+            "These also work with a `%` prefix. Region and tier can be given in any order.\n\n"
+            "**%cutoff** `[region] {tier}` - Cutoff points, speed, and the projected final for a tier.\n"
+            "**%graph** / **%eph** `[region] {tier}` - Graph a tier's cutoff over the event.\n"
+            "**%heatmap** `[region] {tier}` - Hourly event-point gain (EPH) heatmap.\n"
+            "**%leaderboard** / **%lb** `[region]` - Current event's top 100.\n"
+            "**%player** `{name}` - Look up a player by name across every region's top 100.\n\n"
+            "-# Regions: US / AS / JP (fuzzy). Tiers: `1`, `t100`, `500`, ..."
+        ),
+    )
+
+
+class _HelpView(HoloView):
+    """the /help message's buttons. anyone may click; each gets an ephemeral reply."""
+
+    def __init__(self) -> None:
+        super().__init__(timeout=600)  # no restrict_to -> anyone can open the list
+
+    @discord.ui.button(label="Text Commands", emoji="⌨️", style=discord.ButtonStyle.secondary)
+    async def text_commands(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        await interaction.response.send_message(embed=_text_commands_embed(), ephemeral=True)
 
 
 class InfoCog(commands.Cog):
@@ -86,7 +117,8 @@ class InfoCog(commands.Cog):
                 "QualiArts Inc., COVER Corp., hololive Dreams, or any hololive members."
             ),
         )
-        await interaction.followup.send(embed=embed)
+        view = _HelpView()
+        view.message = await interaction.followup.send(embed=embed, view=view, wait=True)
 
     @app_commands.command(name="donate", description="Support the bot.")
     @app_commands.allowed_installs(guilds=True, users=True)

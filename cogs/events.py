@@ -202,6 +202,24 @@ class EventsCog(commands.Cog):
         assert view is not None
         await view.send_initial(interaction)
 
+    @event.command(name="player", description="Look up a player by name across every region's top 100.")
+    @app_commands.describe(name="Player name (searches all regions' current top 100).")
+    async def player(self, interaction: discord.Interaction, name: str) -> None:
+        # slash twin of %player; the player search + card live in GraphCog, so delegate to it
+        await interaction.response.defer(thinking=True)
+        graph_cog = self.bot.get_cog("GraphCog")
+        if graph_cog is None:
+            await interaction.followup.send(
+                embed=embeds.error_embed("Player lookup is unavailable right now.")
+            )
+            return
+        view, err = await graph_cog._player_response(name, interaction.user.id)  # type: ignore[attr-defined]
+        if err is not None:
+            await interaction.followup.send(embed=err)
+            return
+        assert view is not None
+        view.message = await interaction.followup.send(view=view, wait=True)
+
     @commands.command(name="leaderboard", aliases=["lb"])
     async def p_leaderboard(self, ctx: commands.Context, *args: str) -> None:
         # %leaderboard [region] - always the current event; region optional, nothing else

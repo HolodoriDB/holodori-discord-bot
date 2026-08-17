@@ -603,43 +603,45 @@ class GraphCog(commands.Cog):
             rank=int(player["rank"]),
             name=str(player["name"]),
             points=player.get("points"),
+            updated=player.get("updatedAt"),
             restrict_to=restrict_to,
         )
 
-    @commands.command(name="player")
-    async def p_player(self, ctx: commands.Context, *, query: str = "") -> None:
-        # %player {name} - greedily takes the whole rest as the name; searches every region's t100
+    async def _player_response(
+        self, query: str, requester_id: int
+    ) -> tuple["HoloLayoutView | None", "discord.Embed | None"]:
+        # shared by %player and /event player: (v2 view, None) to send a card/picker, or
+        # (None, embed) for a usage/no-match message. searches every region's current top 100.
         query = query.strip()
         if not query:
-            await ctx.reply(
-                embed=text_commands.help_embed("player", "{name}", any_order=False, aliases=[]),
-                mention_author=False,
-            )
-            return
+            return None, text_commands.help_embed("player", "{name}", any_order=False, aliases=[])
         assert self.bot.holo
-        async with ctx.typing():
-            try:
-                results = await self.bot.holo.search_players(query)
-            except HolodoriError:
-                results = []
+        try:
+            results = await self.bot.holo.search_players(query)
+        except HolodoriError:
+            results = []
         if not results:
-            await ctx.reply(
-                embed=embeds.error_embed(
-                    f"No player matching **{discord.utils.escape_markdown(query)}** in the "
-                    "current top 100 on any region."
-                ),
-                mention_author=False,
+            return None, embeds.error_embed(
+                f"No player matching **{discord.utils.escape_markdown(query)}** in the "
+                "current top 100 on any region."
             )
-            return
         # identical / very-close matches (e.g. the same name on two regions) -> ask which one
         top = results[0]
         close = [r for r in results if top["match"] - r["match"] <= 6][:10]
         if len(close) >= 2:
-            pick = _PlayerPickView(self, close, query, restrict_to=ctx.author.id)
-            pick.message = await ctx.reply(view=pick, mention_author=False)
+            return _PlayerPickView(self, close, query, restrict_to=requester_id), None
+        return self._player_card_view(top, restrict_to=requester_id), None
+
+    @commands.command(name="player")
+    async def p_player(self, ctx: commands.Context, *, query: str = "") -> None:
+        # %player {name} - greedily takes the whole rest as the name; searches every region's t100
+        async with ctx.typing():
+            view, err = await self._player_response(query, ctx.author.id)
+        if err is not None:
+            await ctx.reply(embed=err, mention_author=False)
             return
-        card = self._player_card_view(top, restrict_to=ctx.author.id)
-        card.message = await ctx.reply(view=card, mention_author=False)
+        assert view is not None
+        view.message = await ctx.reply(view=view, mention_author=False)
 
 
 class _GraphView(HoloView):
@@ -825,6 +827,7 @@ class _PlayerCardView(HoloLayoutView):
         rank: int,
         name: str,
         points: int | None,
+        updated: int | None = None,
         restrict_to: int,
     ) -> None:
         super().__init__(timeout=180, restrict_to=restrict_to)
@@ -839,8 +842,10 @@ class _PlayerCardView(HoloLayoutView):
         container.add_item(
             discord.ui.TextDisplay(f"## {discord.utils.escape_markdown(name)} - {label}")
         )
-        container.add_item(discord.ui.TextDisplay(f"**Player Statistics**\n**Points:** {pts}"))
-        container.add_item(discord.ui.TextDisplay(f"-# Currently rank {rank}"))
+        stats = f"**Player Statistics**\n**Points:** {pts}\nCurrently rank {rank}"
+        if updated:
+            stats += f"\n**Last Data Update:** <t:{int(updated) // 1000}:R>"
+        container.add_item(discord.ui.TextDisplay(stats))
         row = discord.ui.ActionRow()
         for lbl, emo, cb in (
             ("Graph", "📈", self._on_graph),
