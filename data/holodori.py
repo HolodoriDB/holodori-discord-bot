@@ -289,6 +289,10 @@ class HolodoriData:
             changed = True
         if changed:
             self._save_search_keys()
+            LOGGING.infoprint(
+                "holodori search-index mirrored: "
+                + ", ".join(f"{k} {len(self._auto_keys.get(k, {}))}" for k in ALIAS_KINDS)
+            )
 
     def _save_search_keys(self) -> None:
         os.makedirs(CACHE_DIR, exist_ok=True)

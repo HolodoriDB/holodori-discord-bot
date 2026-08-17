@@ -81,10 +81,12 @@ class TrackerCog(commands.Cog):
             embed.set_thumbnail(url=logo)
         try:
             await channel.send(embed=embed)
-        except discord.HTTPException as e:
-            # the usual single-channel stall: lost Send Messages / Embed Links, or the channel was
-            # deleted. surface it instead of going silently quiet
-            self.bot.warn(f"[tracker] post to channel {getattr(channel, 'id', '?')} failed: {e!r}")
+        except discord.Forbidden:
+            # can view the channel but can't send here - the tracker can never post, so delete it
+            if self.bot.user_data:
+                await self.bot.user_data.remove_event_tracker(getattr(channel, "id", 0))
+        except discord.HTTPException:
+            pass
 
     async def _ping(self, channel: discord.abc.Messageable, content: str) -> None:
         try:
@@ -126,17 +128,25 @@ class TrackerCog(commands.Cog):
             for t in trackers:
                 if t["region"] != region:
                     continue
-                channel = self.bot.get_channel(t["channel_id"])
+                cid = t["channel_id"]
+                channel = self.bot.get_channel(cid)
+                if channel is None:
+                    # cache miss (common right after startup) - escalate to the api. a deleted (404)
+                    # or forbidden (403) channel can never work, so delete the tracker; a transient
+                    # error is just retried next tick
+                    try:
+                        channel = await self.bot.fetch_channel(cid)
+                    except (discord.NotFound, discord.Forbidden):
+                        await self.bot.user_data.remove_event_tracker(cid)
+                        continue
+                    except discord.HTTPException:
+                        continue
                 if not isinstance(channel, (discord.TextChannel, discord.Thread, discord.VoiceChannel)):
-                    # None = deleted, archived thread, or the bot can no longer see it
-                    self.bot.warn(
-                        f"[tracker] channel {t['channel_id']} (region {region}) unavailable; skipping"
-                    )
                     continue
                 if t["tracking_type"] == 2:
                     await self._post_board(channel, data)
                 elif now - (t.get("last_post") or 0) >= _HOURLY_SECONDS:
-                    await self.bot.user_data.set_tracker_last_post(t["channel_id"], now)
+                    await self.bot.user_data.set_tracker_last_post(cid, now)
                     await self._post_board(channel, data)
 
             for a in alerts:

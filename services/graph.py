@@ -9,10 +9,35 @@ import bisect
 import datetime
 import io
 import math
+import os
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 
-from services.leaderboard import _font
+# a bundled ttf, then common system fonts, then pillow's sized default, so it renders on windows and
+# the linux server (the leaderboard used to share this before it became a text table)
+_FONT_CANDIDATES = [
+    "data/assets/fonts/font.ttf",
+    "data/assets/fonts/font-bold.ttf",
+    "C:/Windows/Fonts/segoeui.ttf",
+    "C:/Windows/Fonts/arial.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+    "/Library/Fonts/Arial.ttf",
+]
+
+
+def _font(size: int) -> "ImageFont.FreeTypeFont | ImageFont.ImageFont":
+    for path in _FONT_CANDIDATES:
+        if os.path.exists(path):
+            try:
+                return ImageFont.truetype(path, size)
+            except OSError:
+                continue
+    try:
+        return ImageFont.load_default(size)  # pillow >= 10.1
+    except TypeError:
+        return ImageFont.load_default()
+
 
 _BG = (17, 17, 17, 255)
 _GRID = (44, 48, 58, 255)
