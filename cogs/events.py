@@ -8,7 +8,9 @@ from discord import app_commands
 from discord.ext import commands
 
 from data.models import EventInfo
+from data.search import preprocess
 from helpers import details, embeds
+from helpers.aliases import alias_field
 from helpers.autocompletes import REGION_CHOICES, REGION_LABELS, autocompletes
 
 if TYPE_CHECKING:
@@ -89,12 +91,16 @@ class EventsCog(commands.Cog):
         if ev is None:
             await interaction.followup.send(embed=embeds.error_embed("Couldn't find that event."))
             return
-        keys = self.bot.data.event_search_keys(ev.eventId)
+        manual = sorted(self.bot.data.event_aliases(ev.eventId))
+        # the keys the matcher accepts, minus the manual aliases, the generic label, and the bare id
+        skip = {preprocess(a) for a in manual} | {preprocess(ev.name), str(ev.eventId)}
+        auto = [k for k in self.bot.data.event_search_keys(ev.eventId) if k not in skip]
         embed = embeds.embed(
-            title=f"Searchable as - {ev.eventId}",
-            description="\n".join(f"- `{k}`" for k in keys) if keys else "No extra search keys yet.",
+            title="Aliases",
+            description=f"Aliases for event `{ev.eventId}`",
         )
-        embed.set_footer(text=f"{ev.eventId} - {len(keys)} keys (auto + manual)")
+        embed.add_field(name="Manually Added", value=alias_field(manual), inline=False)
+        embed.add_field(name="Automatically Generated", value=alias_field(auto), inline=False)
         await interaction.followup.send(embed=embed)
 
     @event.command(name="schedule", description="View the current and next event.")

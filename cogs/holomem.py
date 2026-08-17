@@ -6,7 +6,9 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from data.search import preprocess
 from helpers import details, embeds
+from helpers.aliases import alias_field
 from helpers.autocompletes import REGION_CHOICES, REGION_LABELS, autocompletes
 from helpers.lb_view import LeaderboardView
 from services.holodori import HolodoriError
@@ -65,12 +67,16 @@ class HolomemCog(commands.Cog):
                 embed=embeds.error_embed(f"Couldn't find a holomem matching `{holomem}`.")
             )
             return
-        keys = self.bot.data.holomem_search_keys(member.id)
+        manual = sorted(self.bot.data.holomem_aliases(member.id))
+        # the keys the matcher accepts, minus the manual aliases, the name, and the bare id
+        skip = {preprocess(a) for a in manual} | {preprocess(member.name), str(member.id)}
+        auto = [k for k in self.bot.data.holomem_search_keys(member.id) if k not in skip]
         embed = embeds.embed(
-            title=f"Searchable as - {member.name}",
-            description="\n".join(f"- `{k}`" for k in keys) if keys else "No extra search keys yet.",
+            title="Aliases",
+            description=f"Aliases for `{member.name}` (ID `{member.id}`)",
         )
-        embed.set_footer(text=f"{member.id} - {len(keys)} keys (auto + manual)")
+        embed.add_field(name="Manually Added", value=alias_field(manual), inline=False)
+        embed.add_field(name="Automatically Generated", value=alias_field(auto), inline=False)
         await interaction.followup.send(embed=embed)
 
     @holomem.command(name="leaderboard", description="Live per-holomem rating rank.")

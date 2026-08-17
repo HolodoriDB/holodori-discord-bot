@@ -9,7 +9,9 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from data.search import preprocess
 from helpers import details, embeds, imaging
+from helpers.aliases import alias_field
 from helpers.autocompletes import autocompletes
 from helpers.views import LinkButtonView, Paginator
 from services.holodori import HolodoriError, HolodoriNotFound
@@ -148,12 +150,16 @@ class SongCog(commands.Cog):
                 embed=embeds.error_embed(f"Couldn't find a song matching `{song}`.")
             )
             return
-        keys = self.bot.data.song_search_keys(s.id)
+        manual = sorted(self.bot.data.song_aliases(s.id))
+        # the keys the matcher accepts, minus the manual aliases, the title, and the bare id
+        skip = {preprocess(a) for a in manual} | {preprocess(s.title), str(s.id)}
+        auto = [k for k in self.bot.data.song_search_keys(s.id) if k not in skip]
         embed = embeds.embed(
-            title=f"Searchable as - {s.title}",
-            description="\n".join(f"- `{k}`" for k in keys) if keys else "No extra search keys yet.",
+            title="Aliases",
+            description=f"Aliases for `{s.title}` (ID `{s.id}`)",
         )
-        embed.set_footer(text=f"Song ID {s.id} - {len(keys)} keys (auto + manual)")
+        embed.add_field(name="Manually Added", value=alias_field(manual), inline=False)
+        embed.add_field(name="Automatically Generated", value=alias_field(auto), inline=False)
         await interaction.followup.send(embed=embed)
 
     @song.command(name="difficulty", description="Find all songs of a level.")
