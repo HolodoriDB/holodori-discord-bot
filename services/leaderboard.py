@@ -1,10 +1,11 @@
 """RoboNene-style text leaderboard, rendered as one monospace code block.
 
-Columns T (rank + tier move), Name, Score, Change; the name column is squeezed to keep a row within a
-target width, and every column pads by DISPLAY width (CJK/Hangul count as 2 cells) so a wide name
-doesn't shove later columns. Ported from RoboNene's generateRankingTextChanges
-(github.com/Ai0796/RoboNene). NB: a fenced block can render CJK as tofu on some clients (the old
-per-row inline `code` spans avoided that); the display-width padding keeps columns aligned regardless.
+Columns T (rank + tier move), Name, Score, Change; the name column is squeezed to a target width and
+every column pads by DISPLAY width (CJK = 2 cells). Ported from RoboNene's generateRankingTextChanges
+(github.com/Ai0796/RoboNene). Known limitation: Discord renders CJK/Hangul at a non-2x width (and it
+differs desktop vs mobile), so a CJK name shifts whatever column follows it - true in inline `code`
+too, so it's NOT an inline-vs-block thing. The only reliable text fix is to make the name the LAST
+column so nothing follows it.
 """
 
 from __future__ import annotations
