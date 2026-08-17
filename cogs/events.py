@@ -151,13 +151,14 @@ class EventsCog(commands.Cog):
         event: str | None = None,
         region: str = "default",
     ) -> None:
-        from helpers.lb_view import LeaderboardView
+        from helpers.lb_view import Chapter, LeaderboardView
 
         await interaction.response.defer(thinking=True)
         assert self.bot.holo
         region = await self._region(interaction.user.id, region)
+        lang = await self._lang(interaction.user.id)
         data = await self.bot.holo.get_event_leaderboard(
-            region, event_id=event, language=await self._lang(interaction.user.id)
+            region, event_id=event, language=lang
         )
         rankings = data.get("rankings", [])
         if not rankings:
@@ -165,10 +166,35 @@ class EventsCog(commands.Cog):
                 embed=embeds.error_embed("No ranking data for that event yet.")
             )
             return
+        eid = data.get("eventId")
+        current_chapter = data.get("chapterId")
+
+        # relay events get a row of holomem chapter buttons; find the served event's chapter meta
+        chapters: list[Chapter] = []
+        ev = next((e for e in await self._events(region, interaction.user.id) if e.eventId == eid), None)
+        if ev and len(ev.chapterMeta) > 1:
+            now_ms = int(time.time() * 1000)
+            for i, (cid, cm) in enumerate(ev.chapterMeta.items()):
+                started = cm.startTime is None or cm.startTime <= now_ms
+                label = cm.shortName or cm.name or f"Ch {i + 1}"
+                chapters.append((cid, label, started))
+
+        async def fetch(cid: str) -> list[dict]:
+            d = await self.bot.holo.get_event_leaderboard(  # type: ignore[union-attr]
+                region, event_id=eid, chapter_id=cid, language=lang
+            )
+            return d.get("rankings", [])
+
         title = f"{data.get('eventName', 'Event')} - Top 100"
         logo = self.bot.holo.unsquished_image_url(data.get("logo"))
         view = LeaderboardView(
-            rows=rankings, title=title, thumb=logo, restrict_to=interaction.user.id
+            rows=rankings,
+            title=title,
+            thumb=logo,
+            restrict_to=interaction.user.id,
+            chapters=chapters,
+            current_chapter=current_chapter,
+            fetch=fetch,
         )
         await view.send_initial(interaction)
 

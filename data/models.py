@@ -132,6 +132,15 @@ class HolomemGroup(_Model):
     members: list[HolomemMember] = []
 
 
+class ChapterMeta(_Model):
+    # a marathon chapter named after its linked holomem
+    name: str | None = None
+    shortName: str | None = None
+    startTime: int | None = None
+    endTime: int | None = None
+    characterId: str | None = None
+
+
 class EventInfo(_Model):
     eventId: str
     name: str
@@ -144,6 +153,8 @@ class EventInfo(_Model):
     revealStartTime: int | None = None
     isSongScore: bool = False
     chapters: list[str] = []
+    # per-chapter metadata (holomem name, start/end), keyed by chapter id; ordered chronologically
+    chapterMeta: dict[str, ChapterMeta] = {}
     # the chapter running right now (else the latest) - what to default to
     activeChapterId: str | None = None
     live: bool = False
