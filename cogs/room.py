@@ -38,7 +38,9 @@ _HAS_CODE = re.compile(rf"-{_CODE}(?:-[0-9fx])?$")
 
 # a code may be typed with or without the dash: 1111-2222 or 11112222
 _CODE_TOKEN = re.compile(r"^(\d{4})-?(\d{4})$")
-_MSG_PLAYERS = re.compile(r"^\+([0-4])$")
+# players token: 0-4, or the literal "f" (full) - accepted the same way the slash choice value is
+_PLAYERS_TOKEN = re.compile(r"[0-4f]", re.IGNORECASE)
+_MSG_PLAYERS = re.compile(r"^\+([0-4f])$", re.IGNORECASE)
 
 _PLAYER_CHOICES = [
     app_commands.Choice(name="0 (Full)", value="f"),
@@ -72,6 +74,9 @@ def _code_int(token: str) -> int:
 
 
 def _norm_players(raw: str | None) -> str | None:
+    if raw is None:
+        return None
+    raw = raw.lower()
     return "f" if raw == "0" else raw  # 0 open slots == full
 
 
@@ -274,7 +279,7 @@ class RoomCog(commands.Cog):
         for arg in args:
             if code is None and _CODE_TOKEN.match(arg):
                 code = _code_int(arg)
-            elif players is None and re.fullmatch(r"[0-4]", arg):
+            elif players is None and _PLAYERS_TOKEN.fullmatch(arg):
                 players = _norm_players(arg)
 
         channel = _room_channel(message.channel)
