@@ -54,16 +54,18 @@ class LBRow:
 
 
 def _tier_tag(change: int) -> str:
+    # compact rank-move suffix stuck to the rank ("6↑1", "16↓4", "1-") - no parens, to keep the row
+    # narrow enough to fit the embed on desktop
     if change > 0:
-        return f"(↑{change})"
+        return f"↑{change}"
     if change < 0:
-        return f"(↓{-change})"
-    return "(-)"
+        return f"↓{-change}"
+    return "-"
 
 
 def _change_str(v: int | None) -> str:
-    # signed for a real gain/loss; "-" for none or unknown (matches the old board)
-    return f"{v:+,}" if v else "-"
+    # the gain; 0 shows as "0", unknown as "-". no + sign (saves a column cell)
+    return "-" if v is None else f"{v:,}"
 
 
 def _clean(name: str) -> str:
@@ -75,16 +77,18 @@ def format_leaderboard(rows: list[LBRow], *, mobile: bool = False) -> str:
         return "​"  # zero-width space: an embed field/description can't be empty
     max_len = MOBILE_MAX if mobile else DESKTOP_MAX
     names = [_clean(r.name) for r in rows]
-    rank_lbl, name_lbl, score_lbl, change_lbl = "T", "Name", "Score", "Change"
+    rank_lbl, name_lbl, score_lbl, change_lbl = "#", "Name", "Score", "+/hr"
 
-    rank_w = max(len(rank_lbl), *(len(str(r.rank)) for r in rows))
-    tag_w = max(len(_tier_tag(r.rank_change)) for r in rows)
+    # the "#" column is the rank with its move-tag stuck on ("6↑1"), left-aligned as one cell
+    ranks = [str(r.rank) + _tier_tag(r.rank_change) for r in rows]
+    rank_w = max(len(rank_lbl), *(_width(s) for s in ranks))
     name_w = max(len(name_lbl), *(_width(n) for n in names))  # display cells, not char count
     score_w = max(len(score_lbl), *(len(f"{r.score:,}") for r in rows))
     change_w = max(len(change_lbl), *(len(_change_str(r.score_change)) for r in rows))
 
-    # squeeze only the name column so the row fits the target width
-    over = max(0, (rank_w + tag_w + name_w + score_w + change_w) - max_len)
+    # squeeze only the name column so the WHOLE row (incl. the 3 single-space separators) fits the
+    # target width - not counting the separators is what let the desktop board overrun the embed
+    over = max(0, (rank_w + name_w + score_w + change_w + 3) - max_len)
     name_w = max(len(name_lbl), name_w - over)
 
     def row(rank: str, name: str, score: str, change: str, star: bool = False) -> str:
@@ -92,19 +96,16 @@ def format_leaderboard(rows: list[LBRow], *, mobile: bool = False) -> str:
 
     out = [
         row(
-            # "T" right-aligned over the rank digits, blank over the tier-tag column (was floated to
-            # the far right of rank+tag, which read as misaligned)
-            rank_lbl.rjust(rank_w) + " " * tag_w,
+            _fit(rank_lbl, rank_w),
             _fit(name_lbl, name_w),
-            score_lbl.ljust(score_w),
+            score_lbl.rjust(score_w),
             change_lbl.rjust(change_w),
         )
     ]
-    for r, name in zip(rows, names):
-        rank = str(r.rank).rjust(rank_w) + _tier_tag(r.rank_change).ljust(tag_w)
+    for r, name, rk in zip(rows, names, ranks):
         out.append(
             row(
-                rank,
+                _fit(rk, rank_w),  # rank+tag, left-aligned
                 _fit(name, name_w),  # truncate + pad by display width so CJK names stay aligned
                 f"{r.score:,}".rjust(score_w),
                 _change_str(r.score_change).rjust(change_w),

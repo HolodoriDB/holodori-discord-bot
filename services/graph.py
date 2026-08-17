@@ -365,7 +365,7 @@ def render_heatmap(
     head_h = 24 * _SS
     title_h = 46 * _SS
     note_lines = 1 + has_md + has_pd + has_np + has_nd
-    legend_h = 24 * _SS + note_lines * 20 * _SS
+    legend_h = 38 * _SS + note_lines * 20 * _SS  # extra top pad so the notes clear the gradient
     W = label_w + 24 * cell_w + 20 * _SS
     gy0 = title_h + head_h
     H = gy0 + num_days * cell_h + legend_h
@@ -443,8 +443,10 @@ def render_heatmap(
     draw.text((bar_x + lw, ly + 16 * _SS), _fmt_score(max_val), font=f_axis, fill=_MUTED, anchor="rt")
     draw.text((bar_x + lw + 16 * _SS, ly + 6 * _SS), "event points / hour", font=f_axis, fill=_MUTED, anchor="lm")
 
-    # marker legend: one line per marker that actually appears
-    ny = ly + 26 * _SS
+    # marker legend: one line per marker that actually appears. left-aligned to the IMAGE edge
+    # (like the title), not the grid, with a gap below the gradient bar
+    ny = ly + 40 * _SS
+    notes_x = 14 * _SS
     for on, text, col in (
         (has_md, "MD - Missing data. We failed to fetch data for most of this hour.", _MD_TEXT),
         (has_pd, "* - Partial data. We had some data gaps, so this hour's value may be off.", _FLAG_PD),
@@ -456,8 +458,8 @@ def render_heatmap(
         (has_nd, "ND - No data. They were not on the top 100 this hour.", _ND_TEXT),
     ):
         if on:
-            for line in _wrap_px(draw, text, f_axis, W - gx0 - 16 * _SS):
-                draw.text((gx0, ny), line, font=f_axis, fill=col, anchor="lt")
+            for line in _wrap_px(draw, text, f_axis, W - notes_x - 14 * _SS):
+                draw.text((notes_x, ny), line, font=f_axis, fill=col, anchor="lt")
                 ny += 20 * _SS
 
     img = img.resize((W // _SS, H // _SS), Image.Resampling.LANCZOS)
