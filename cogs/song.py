@@ -46,7 +46,7 @@ class SongCog(commands.Cog):
     async def jacket(self, interaction: discord.Interaction, song: str) -> None:
         await interaction.response.defer(thinking=True)
         assert self.bot.holo and self.bot.data
-        s = self.bot.data.match_song(song)
+        s = self.bot.data.match_song_aliased(song)
         if not s:
             await interaction.followup.send(
                 embed=embeds.error_embed("Couldn't find that song. Pick one from the list.")
@@ -75,7 +75,7 @@ class SongCog(commands.Cog):
     ) -> None:
         await interaction.response.defer(thinking=True)
         assert self.bot.holo and self.bot.data and self.bot.user_data
-        s = self.bot.data.match_song(song)
+        s = self.bot.data.match_song_aliased(song)
         if not s:
             await interaction.followup.send(
                 embed=embeds.error_embed("Couldn't find that song. Pick one from the list.")
@@ -118,7 +118,7 @@ class SongCog(commands.Cog):
     async def info(self, interaction: discord.Interaction, song: str) -> None:
         await interaction.response.defer(thinking=True)
         assert self.bot.holo and self.bot.data
-        s = self.bot.data.match_song(song)
+        s = self.bot.data.match_song_aliased(song)
         if not s:
             await interaction.followup.send(
                 embed=embeds.error_embed(f"Couldn't find a song matching `{song}`.")
@@ -144,7 +144,7 @@ class SongCog(commands.Cog):
     async def aliases(self, interaction: discord.Interaction, song: str) -> None:
         await interaction.response.defer(thinking=True)
         assert self.bot.data
-        s = self.bot.data.match_song(song)
+        s = self.bot.data.match_song_aliased(song)
         if not s:
             await interaction.followup.send(
                 embed=embeds.error_embed(f"Couldn't find a song matching `{song}`.")

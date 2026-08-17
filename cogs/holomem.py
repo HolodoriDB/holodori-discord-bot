@@ -46,7 +46,7 @@ class HolomemCog(commands.Cog):
     async def info(self, interaction: discord.Interaction, holomem: str) -> None:
         await interaction.response.defer(thinking=True)
         assert self.bot.data
-        member = self.bot.data.match_holomem(holomem)
+        member = self.bot.data.match_holomem_aliased(holomem)
         found = details.find_member(self.bot.data.holomem_groups(), member.id) if member else None
         if not found:
             await interaction.followup.send(
@@ -61,7 +61,7 @@ class HolomemCog(commands.Cog):
     async def aliases(self, interaction: discord.Interaction, holomem: str) -> None:
         await interaction.response.defer(thinking=True)
         assert self.bot.data
-        member = self.bot.data.match_holomem(holomem)
+        member = self.bot.data.match_holomem_aliased(holomem)
         if not member:
             await interaction.followup.send(
                 embed=embeds.error_embed(f"Couldn't find a holomem matching `{holomem}`.")

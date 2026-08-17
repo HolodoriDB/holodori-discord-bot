@@ -90,7 +90,7 @@ class Autocompletes:
                 return []
             return [
                 app_commands.Choice(name=s.title[:100], value=s.id)
-                for s in self.holodori.search_songs(current, 25)
+                for s in self.holodori.search_songs_aliased(current, 25)
             ]
 
         return cb
@@ -101,7 +101,7 @@ class Autocompletes:
                 return []
             return [
                 app_commands.Choice(name=h.name[:100], value=h.id)
-                for h in self.holodori.search_holomems(current, 25)
+                for h in self.holodori.search_holomems_aliased(current, 25)
             ]
 
         return cb
@@ -115,10 +115,9 @@ class Autocompletes:
                 events = await self.holodori.events(region, self.holodori.client.lang)
             except Exception:
                 return []
-            q = current.lower().strip()
-            hits = [e for e in events if not q or q in e.name.lower() or q in e.eventId.lower()]
             return [
-                app_commands.Choice(name=e.name[:100], value=e.eventId) for e in hits[:25]
+                app_commands.Choice(name=e.name[:100], value=e.eventId)
+                for e in self.holodori.search_events_aliased(events, current, 25)
             ]
 
         return cb

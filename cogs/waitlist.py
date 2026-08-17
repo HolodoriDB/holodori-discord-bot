@@ -283,7 +283,7 @@ class WaitlistCog(commands.Cog):
         )
 
     def _song_title(self, song: str) -> str:
-        match = self.bot.data.match_song(song) if self.bot.data else None
+        match = self.bot.data.match_song_aliased(song) if self.bot.data else None
         return match.title if match else song
 
     @waitlist.command(name="song", description="Set the song for this channel's waitlist.")

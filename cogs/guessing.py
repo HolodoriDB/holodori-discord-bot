@@ -11,7 +11,6 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from data import search
 from helpers import embeds, imaging
 from helpers.emojis import emojis
 from helpers.views import HoloView
@@ -630,7 +629,7 @@ class GuessCog(commands.Cog):
     async def _check_song(self, message: discord.Message, data: dict, content: str) -> None:
         assert self.bot.data and self.bot.holo
         tip = MUSIC_TIP if data["guessing"] == "music" else GUESS_TIP
-        hit = self.bot.data.match_song(content)
+        hit = self.bot.data.match_song_aliased(content)
         if not hit:
             await message.reply(
                 embed=embeds.error_embed(
@@ -658,7 +657,7 @@ class GuessCog(commands.Cog):
 
     async def _check_character(self, message: discord.Message, data: dict, content: str) -> None:
         assert self.bot.data
-        hit = self.bot.data.match_holomem(content)
+        hit = self.bot.data.match_holomem_aliased(content)
         if not hit:
             await message.reply(
                 embed=embeds.error_embed(
@@ -682,7 +681,7 @@ class GuessCog(commands.Cog):
             events = await self.bot.data.events(data.get("region", "us"), self.bot.holo.lang)  # type: ignore[union-attr]
         except HolodoriError:
             events = []
-        hit = search.best_match(content, events, lambda e: (e.name, e.eventId))
+        hit = self.bot.data.match_event_aliased(events, content)
         if not hit:
             await message.reply(
                 embed=embeds.error_embed(

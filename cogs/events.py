@@ -59,13 +59,14 @@ class EventsCog(commands.Cog):
         region: str = "default",
     ) -> None:
         await interaction.response.defer(thinking=True)
+        assert self.bot.data
         region = await self._region(interaction.user.id, region)
         events = await self._events(region, interaction.user.id)
         if not events:
             await interaction.followup.send(embed=embeds.error_embed("No events found."))
             return
         if event:
-            ev = next((e for e in events if e.eventId == event), None)
+            ev = self.bot.data.match_event_aliased(events, event)
             if ev is None:
                 await interaction.followup.send(
                     embed=embeds.error_embed("Couldn't find that event.")
@@ -87,7 +88,7 @@ class EventsCog(commands.Cog):
         assert self.bot.data
         region = await self._region(interaction.user.id, region)
         events = await self._events(region, interaction.user.id)
-        ev = next((e for e in events if e.eventId == event), None)
+        ev = self.bot.data.match_event_aliased(events, event)
         if ev is None:
             await interaction.followup.send(embed=embeds.error_embed("Couldn't find that event."))
             return
