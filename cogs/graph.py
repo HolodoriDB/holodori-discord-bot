@@ -11,8 +11,10 @@ from discord.ext import commands
 
 from helpers import embeds, timezones
 from helpers.autocompletes import REGION_CHOICES, REGION_LABELS, autocompletes
+from helpers.chapter_buttons import ChapterButtons, chapters_from_event
 from helpers.views import HoloView
-from services.graph import render_graph, render_heatmap
+from services.graph import render_graph as _render_graph_img
+from services.graph import render_heatmap as _render_heatmap_img
 from services.holodori import HolodoriError
 
 if TYPE_CHECKING:
@@ -111,7 +113,7 @@ class GraphCog(commands.Cog):
         suffix = f" - {song_title}" if music and song_title else ""
         title = f"Tier {tier} {label} - {REGION_LABELS.get(region, region)}{suffix}"
         img = await asyncio.to_thread(
-            render_graph, lines, title, tz=tz, prediction=prediction if predict else None
+            _render_graph_img, lines, title, tz=tz, prediction=prediction if predict else None
         )
 
         embed = embeds.embed(title=title)
@@ -202,7 +204,10 @@ class GraphCog(commands.Cog):
             ev=ev,
             predict=predict,
         )
-        if not files or not songs:
+        # a view is worth showing when there's more than one chapter to switch between, or a song
+        # dropdown to offer
+        chapters = chapters_from_event(ev)
+        if not files or (len(chapters) <= 1 and not songs):
             await interaction.followup.send(embed=embed, files=files)
             return
         view = _GraphView(
@@ -214,8 +219,10 @@ class GraphCog(commands.Cog):
             border=border,
             tz=tz,
             ev=ev,
+            music=music,
             songs=songs,
             music_id=music_id,
+            predict=predict,
             restrict_to=interaction.user.id,
         )
         view.message = await interaction.followup.send(embed=embed, files=files, view=view, wait=True)
@@ -273,23 +280,58 @@ class GraphCog(commands.Cog):
         chapter = (ev.activeChapterId or (ev.chapters[-1] if ev.chapters else None)) if ev else None
         player_mode = (tier <= 100) if by_tier is None else (not by_tier)
 
+        embed, files = await self.render_heatmap(
+            region=region,
+            tier=tier,
+            event_id=event,
+            chapter=chapter,
+            player_mode=player_mode,
+            tz=tz,
+            ev=ev,
+        )
+        chapters = chapters_from_event(ev)
+        if not files or len(chapters) <= 1:
+            await interaction.followup.send(embed=embed, files=files)
+            return
+        view = _HeatmapView(
+            self,
+            region=region,
+            tier=tier,
+            event_id=event,
+            chapter=chapter,
+            player_mode=player_mode,
+            tz=tz,
+            ev=ev,
+            restrict_to=interaction.user.id,
+        )
+        view.message = await interaction.followup.send(embed=embed, files=files, view=view, wait=True)
+
+    async def render_heatmap(
+        self,
+        *,
+        region: str,
+        tier: int,
+        event_id: str | None,
+        chapter: str | None,
+        player_mode: bool,
+        tz: tzinfo,
+        ev: EventInfo | None,
+    ) -> tuple[discord.Embed, list[discord.File]]:
+        assert self.bot.holo
         try:
             # player mode needs both the player series and the cutoff series (the latter is our
             # fetch coverage); a cutoff heatmap needs only the cutoff, so border=True skips the lookup
             data = await self.bot.holo.get_event_graph(
-                region, tier, event_id=event, chapter_id=chapter, border=not player_mode
+                region, tier, event_id=event_id, chapter_id=chapter, border=not player_mode
             )
         except HolodoriError as e:
             msg = e.detail if e.status == 400 and e.detail else f"Couldn't fetch graph: {e.detail or e.status}"
-            await interaction.followup.send(embed=embeds.error_embed(msg))
-            return
+            return embeds.error_embed(msg), []
         tier_series = data.get("tier") or []
         if len(tier_series) < 2:
-            await interaction.followup.send(
-                embed=embeds.error_embed("Not enough cutoff data for that event/tier yet.")
-            )
-            return
+            return embeds.error_embed("Not enough cutoff data for that event/tier yet."), []
         coverage = [int(p[0]) for p in tier_series]
+        # the axis spans THIS chapter (backend now returns chapter-scoped start/end), not the event
         start = data.get("startTime") or coverage[0]
         end = data.get("endTime") or coverage[-1]
 
@@ -297,10 +339,7 @@ class GraphCog(commands.Cog):
         if player_mode:
             user_series = data.get("user") or []
             if len(user_series) < 2:
-                await interaction.followup.send(
-                    embed=embeds.error_embed(f"No tracked player is at T{tier} for this event.")
-                )
-                return
+                return embeds.error_embed(f"No tracked player is at T{tier} for this event."), []
             value_series = user_series
             presence = [int(p[0]) for p in user_series]
             title = f"{data.get('name') or f'T{tier}'} EPH - {REGION_LABELS.get(region, region)}"
@@ -309,7 +348,7 @@ class GraphCog(commands.Cog):
             title = f"Tier {tier} Cutoff EPH - {REGION_LABELS.get(region, region)}"
 
         img = await asyncio.to_thread(
-            render_heatmap,
+            _render_heatmap_img,
             value_series,
             title,
             start_ms=start,
@@ -328,11 +367,12 @@ class GraphCog(commands.Cog):
         if logo:
             embed.set_thumbnail(url=logo)
         embed.set_image(url="attachment://heatmap.png")
-        await interaction.followup.send(embed=embed, files=files)
+        return embed, files
 
 
 class _GraphView(HoloView):
-    """song dropdown for the Song-Scores graph mode; re-renders on selection."""
+    """holomem chapter buttons (relay events) plus, in Song-Scores mode, a song dropdown; re-renders
+    the cutoff graph on either."""
 
     def __init__(
         self,
@@ -345,8 +385,10 @@ class _GraphView(HoloView):
         border: bool,
         tz: tzinfo,
         ev: EventInfo | None,
+        music: bool,
         songs: list[tuple[str, str]],
         music_id: str | None,
+        predict: bool,
         restrict_to: int,
     ) -> None:
         super().__init__(timeout=180, restrict_to=restrict_to)
@@ -358,40 +400,121 @@ class _GraphView(HoloView):
         self.border = border
         self.tz = tz
         self.ev = ev
+        self.music = music
+        self.predict = predict
         self.music_id = music_id
         self._song_list = songs
         self._songs = dict(songs)
-        self._select: discord.ui.Select = discord.ui.Select(placeholder="Choose a song...")
-        self._select.callback = self._on_song  # type: ignore[method-assign]
-        self.add_item(self._select)
-        self._sync_options()
+        self._chapters = ChapterButtons(chapters_from_event(ev), chapter, self._on_chapter)
+        self._chapters.add_to(self)
+        self._select: discord.ui.Select | None = None
+        if music and songs:
+            self._select = discord.ui.Select(
+                placeholder="Choose a song...", row=self._chapters.rows_used
+            )
+            self._select.callback = self._on_song  # type: ignore[method-assign]
+            self.add_item(self._select)
+            self._sync_options()
 
     def _sync_options(self) -> None:
         # rebuild the options every time so the picked song stays selected in the dropdown. without
         # this the dropdown keeps its original default, so re-picking that song registers as no
         # change and discord ignores it
+        if self._select is None:
+            return
         self._select.options = [
             discord.SelectOption(label=title[:100], value=mid, default=mid == self.music_id)
             for mid, title in self._song_list[:25]
-        ]
+        ] or [discord.SelectOption(label="(no songs)", value="_none")]
 
-    async def _on_song(self, interaction: discord.Interaction) -> None:
-        self.music_id = interaction.data["values"][0]  # type: ignore[index]
-        self._sync_options()
-        await interaction.response.defer()
+    async def _rerender(self, interaction: discord.Interaction) -> None:
         embed, files = await self.cog.render_graph(
             region=self.region,
             tier=self.tier,
             event_id=self.event_id,
             chapter=self.chapter,
             border=self.border,
-            music=True,
+            music=self.music,
             music_id=self.music_id,
             song_title=self._songs.get(self.music_id),
             tz=self.tz,
             ev=self.ev,
+            predict=self.predict,
         )
         await interaction.edit_original_response(embed=embed, attachments=files, view=self)
+
+    async def _on_song(self, interaction: discord.Interaction) -> None:
+        self.music_id = interaction.data["values"][0]  # type: ignore[index]
+        self._sync_options()
+        await interaction.response.defer()
+        await self._rerender(interaction)
+
+    async def _on_chapter(self, interaction: discord.Interaction, chapter_id: str) -> None:
+        await interaction.response.defer()
+        self.chapter = chapter_id
+        self._chapters.set_current(chapter_id)
+        if self.music:
+            # each chapter has its own song boards; refetch and reset to the first
+            try:
+                lb = await self.cog.bot.holo.get_event_leaderboard(  # type: ignore[union-attr]
+                    self.region, event_id=self.event_id, chapter_id=chapter_id, music=True
+                )
+                self._song_list = [
+                    (m["musicId"], m.get("title") or m["musicId"]) for m in (lb.get("musics") or [])
+                ]
+            except HolodoriError:
+                self._song_list = []
+            self._songs = dict(self._song_list)
+            self.music_id = self._song_list[0][0] if self._song_list else None
+            self._sync_options()
+        await self._rerender(interaction)
+
+
+class _HeatmapView(HoloView):
+    """holomem chapter buttons (relay events) that re-render the heatmap for the picked chapter."""
+
+    def __init__(
+        self,
+        cog: GraphCog,
+        *,
+        region: str,
+        tier: int,
+        event_id: str | None,
+        chapter: str | None,
+        player_mode: bool,
+        tz: tzinfo,
+        ev: EventInfo | None,
+        restrict_to: int,
+    ) -> None:
+        super().__init__(timeout=180, restrict_to=restrict_to)
+        self.cog = cog
+        self.region = region
+        self.tier = tier
+        self.event_id = event_id
+        self.chapter = chapter
+        self.player_mode = player_mode
+        self.tz = tz
+        self.ev = ev
+        self._chapters = ChapterButtons(chapters_from_event(ev), chapter, self._on_chapter)
+        self._chapters.add_to(self)
+
+    async def _on_chapter(self, interaction: discord.Interaction, chapter_id: str) -> None:
+        await interaction.response.defer()
+        self.chapter = chapter_id
+        self._chapters.set_current(chapter_id)
+        embed, files = await self.cog.render_heatmap(
+            region=self.region,
+            tier=self.tier,
+            event_id=self.event_id,
+            chapter=chapter_id,
+            player_mode=self.player_mode,
+            tz=self.tz,
+            ev=self.ev,
+        )
+        # keep the view even if this chapter has no data yet (so they can switch back)
+        await interaction.edit_original_response(
+            embed=embed, attachments=files, view=self
+        )
 
 
 async def setup(bot: HolodoriBot) -> None:

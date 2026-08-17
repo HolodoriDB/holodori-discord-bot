@@ -55,13 +55,24 @@ class HolodoriData:
         self._auto_keys: dict[str, dict[str, list[str]]] = {}
         self._task: asyncio.Task | None = None
         self._alias_task: asyncio.Task | None = None
+        self._init_task: asyncio.Task | None = None
 
     # --- lifecycle ---
 
     async def start(self) -> None:
+        # boot from the disk caches synchronously (fast) so commands work immediately, then pull the
+        # latest from the backend in the BACKGROUND. the network refreshes (game data + alias mirror +
+        # search-index romanizations) must NOT block startup, or the bot stays offline until they finish.
         self._load_from_disk()
         self._load_aliases()
         self._load_search_keys()
+        self._task = asyncio.create_task(self._poll())
+        self._alias_task = asyncio.create_task(self._poll_aliases())
+        self._init_task = asyncio.create_task(self._initial_refresh())
+
+    async def _initial_refresh(self) -> None:
+        # the poll loops both sleep before their first run, so seed the freshest data here - off the
+        # startup path
         try:
             await self.refresh()
         except Exception as e:
@@ -74,11 +85,9 @@ class HolodoriData:
             await self._refresh_auto_keys()
         except Exception as e:
             LOGGING.warnprint(f"holodori initial search-index refresh failed: {e}")
-        self._task = asyncio.create_task(self._poll())
-        self._alias_task = asyncio.create_task(self._poll_aliases())
 
     async def stop(self) -> None:
-        for task in (self._task, self._alias_task):
+        for task in (self._task, self._alias_task, self._init_task):
             if task:
                 task.cancel()
                 try:
@@ -87,6 +96,7 @@ class HolodoriData:
                     pass
         self._task = None
         self._alias_task = None
+        self._init_task = None
 
     async def _poll(self) -> None:
         while True:
