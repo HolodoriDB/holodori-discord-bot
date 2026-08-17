@@ -361,7 +361,7 @@ def render_heatmap(
             max_val = max(max_val, val)
 
     label_w = 110 * _SS
-    cell_w, cell_h = 46 * _SS, 30 * _SS
+    cell_w, cell_h = 46 * _SS, 38 * _SS
     head_h = 24 * _SS
     title_h = 46 * _SS
     note_lines = 1 + has_md + has_pd + has_np + has_nd

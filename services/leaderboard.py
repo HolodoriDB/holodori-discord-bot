@@ -1,9 +1,10 @@
-"""RoboNene-style text leaderboard.
+"""RoboNene-style text leaderboard, rendered as one monospace code block.
 
-Each row is its own inline-code span (`` `T Name Score Change` ``) so Discord renders every glyph
-with its own font stack - CN/JP names that the old bundled-font PNG dropped as tofu now show. Ported
-from RoboNene's generateRankingTextChanges (github.com/Ai0796/RoboNene): columns T (rank + tier move),
-Name, Score, Change; the name column is squeezed to keep a row within a target width.
+Columns T (rank + tier move), Name, Score, Change; the name column is squeezed to keep a row within a
+target width, and every column pads by DISPLAY width (CJK/Hangul count as 2 cells) so a wide name
+doesn't shove later columns. Ported from RoboNene's generateRankingTextChanges
+(github.com/Ai0796/RoboNene). NB: a fenced block can render CJK as tofu on some clients (the old
+per-row inline `code` spans avoided that); the display-width padding keeps columns aligned regardless.
 """
 
 from __future__ import annotations
@@ -86,11 +87,13 @@ def format_leaderboard(rows: list[LBRow], *, mobile: bool = False) -> str:
     name_w = max(len(name_lbl), name_w - over)
 
     def row(rank: str, name: str, score: str, change: str, star: bool = False) -> str:
-        return f"`{rank} {name} {score} {change}`" + ("⭐" if star else "")
+        return f"{rank} {name} {score} {change}" + (" *" if star else "")
 
     out = [
         row(
-            rank_lbl.rjust(rank_w + tag_w),
+            # "T" right-aligned over the rank digits, blank over the tier-tag column (was floated to
+            # the far right of rank+tag, which read as misaligned)
+            rank_lbl.rjust(rank_w) + " " * tag_w,
             _fit(name_lbl, name_w),
             score_lbl.ljust(score_w),
             change_lbl.rjust(change_w),
@@ -107,4 +110,4 @@ def format_leaderboard(rows: list[LBRow], *, mobile: bool = False) -> str:
                 star=r.is_you,
             )
         )
-    return "\n".join(out)
+    return "```\n" + "\n".join(out) + "\n```"

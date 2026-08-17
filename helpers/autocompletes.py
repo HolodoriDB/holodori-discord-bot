@@ -58,15 +58,19 @@ class Autocompletes:
     def tier(self) -> AutocompleteIntCb:
         async def cb(interaction: discord.Interaction, current: str):
             q = current.strip()
-            # ranks 1-100 are individual players (all regions, no tag); borders are the cutoffs
-            opts = [(r, "") for r in range(100, 0, -1)] + await self._tier_list()
+            if q[:1] in ("T", "t"):  # accept both "T1" and "1"
+                q = q[1:].strip()
+            # ranks 1-100 are individual players (all regions, no tag); borders are the cutoffs.
+            # merged + sorted -> ascending (top rank 1 first, down to the biggest cutoff)
+            merged: dict[int, str] = {r: "" for r in range(1, 101)}
+            for rank, label in await self._tier_list():
+                merged[rank] = label  # border label wins; adds the cutoff ranks (> 100)
             out: list[app_commands.Choice[int]] = []
-            for rank, label in opts:
+            for rank, label in sorted(merged.items()):
                 if q and not str(rank).startswith(q):
                     continue
-                out.append(
-                    app_commands.Choice(name=f"{rank} ({label})" if label else str(rank), value=rank)
-                )
+                name = f"T{rank} ({label})" if label else f"T{rank}"
+                out.append(app_commands.Choice(name=name, value=rank))
                 if len(out) >= 25:
                     break
             return out
