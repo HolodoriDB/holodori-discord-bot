@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import asyncio
-import io
 import time
 from typing import TYPE_CHECKING
 
@@ -12,7 +10,7 @@ from discord.ext import commands, tasks
 from helpers import embeds
 from helpers.autocompletes import REGION_CHOICES, REGION_LABELS
 from services.holodori import HolodoriError
-from services.leaderboard import LBRow, render_leaderboard
+from services.leaderboard import LBRow, format_leaderboard
 
 if TYPE_CHECKING:
     from main import HolodoriBot
@@ -35,13 +33,15 @@ _BIG = 10**15  # effectively unbounded max gain
 def _t20_rows(rankings: list[dict]) -> list[LBRow]:
     out: list[LBRow] = []
     for r in rankings[:_TOP]:
-        rank = f"#{r.get('rank', '?')}"
-        score = f"{int(r.get('score') or 0):,}"
-        rc = int(r.get("rankChange") or 0)
-        ep = int(r.get("epChange") or 0)
-        change = f"+{ep:,}" if ep > 0 else (f"{ep:,}" if ep else "-")
+        ep = r.get("epChange")
         out.append(
-            LBRow(rank, str(r.get("name") or "?"), [score, change], 1 if rc > 0 else (-1 if rc < 0 else 0), abs(rc))
+            LBRow(
+                rank=int(r.get("rank") or 0),
+                name=str(r.get("name") or "?"),
+                score=int(r.get("score") or 0),
+                rank_change=int(r.get("rankChange") or 0),
+                score_change=int(ep) if ep is not None else None,
+            )
         )
     return out
 
@@ -66,9 +66,6 @@ class TrackerCog(commands.Cog):
         rankings = data.get("rankings") or []
         if not rankings:
             return
-        img = await asyncio.to_thread(
-            lambda: render_leaderboard(_t20_rows(rankings), ["Score", "Change"], show_delta=True)
-        )
         embed = embeds.embed(title=data.get("eventName") or "Event Leaderboard")
         parts: list[str] = []
         if data.get("final"):  # the event's aggregation has finished
@@ -77,17 +74,17 @@ class TrackerCog(commands.Cog):
         updated = data.get("lastMinute")
         if isinstance(updated, (int, float)):
             parts.append(f"Top {_TOP}, updated <t:{int(updated) // 1000}:R>")
-        if parts:
-            embed.description = "\n".join(parts)
-        embed.set_image(url="attachment://lb.png")
-        files = [discord.File(io.BytesIO(img), "lb.png")]
+        parts.append(format_leaderboard(_t20_rows(rankings)))
+        embed.description = "\n".join(parts)
         logo = self.bot.holo.unsquished_image_url(data.get("logo")) if self.bot.holo else None
         if logo:
             embed.set_thumbnail(url=logo)
         try:
-            await channel.send(embed=embed, files=files)
-        except discord.HTTPException:
-            pass
+            await channel.send(embed=embed)
+        except discord.HTTPException as e:
+            # the usual single-channel stall: lost Send Messages / Embed Links, or the channel was
+            # deleted. surface it instead of going silently quiet
+            self.bot.warn(f"[tracker] post to channel {getattr(channel, 'id', '?')} failed: {e!r}")
 
     async def _ping(self, channel: discord.abc.Messageable, content: str) -> None:
         try:
@@ -104,7 +101,10 @@ class TrackerCog(commands.Cog):
         try:
             trackers = await self.bot.user_data.list_event_trackers()
             alerts = await self.bot.user_data.list_track_alerts()
-        except Exception:
+        except Exception as e:
+            # this aborts the WHOLE poll (every tracker), so it must never fail silently - e.g. a
+            # missing column after a schema change that wasn't migrated
+            self.bot.warn(f"[tracker] poll aborted, couldn't load trackers/alerts: {e!r}")
             return
         regions = {t["region"] for t in trackers} | {a["region"] for a in alerts}
         now = time.time()
@@ -113,7 +113,9 @@ class TrackerCog(commands.Cog):
         for region in regions:
             try:
                 data = await self.bot.holo.get_event_leaderboard_ids(region)
-            except (HolodoriError, Exception):
+            except (HolodoriError, Exception) as e:
+                # a region-wide fetch failure stalls every tracker in that region (not just one)
+                self.bot.warn(f"[tracker] leaderboard fetch for region {region} failed: {e!r}")
                 continue
             rankings = data.get("rankings") or []
             event_id = data.get("eventId")
@@ -126,6 +128,10 @@ class TrackerCog(commands.Cog):
                     continue
                 channel = self.bot.get_channel(t["channel_id"])
                 if not isinstance(channel, (discord.TextChannel, discord.Thread, discord.VoiceChannel)):
+                    # None = deleted, archived thread, or the bot can no longer see it
+                    self.bot.warn(
+                        f"[tracker] channel {t['channel_id']} (region {region}) unavailable; skipping"
+                    )
                     continue
                 if t["tracking_type"] == 2:
                     await self._post_board(channel, data)
@@ -254,6 +260,18 @@ class TrackerCog(commands.Cog):
             return
         reg = await self._region(interaction.user.id, region)
         await self.bot.user_data.set_event_tracker(channel.id, interaction.guild.id, reg, time.value)
+        # post one board immediately so the channel isn't blank until the first tick; stamp last_post
+        # so an hourly tracker doesn't double-fire on the next poll (note: `time` here is the Choice,
+        # not the module, so use discord's clock)
+        if self.bot.holo:
+            try:
+                data = await self.bot.holo.get_event_leaderboard_ids(reg)
+                await self._post_board(channel, data)
+                await self.bot.user_data.set_tracker_last_post(
+                    channel.id, discord.utils.utcnow().timestamp()
+                )
+            except Exception:
+                pass
         await interaction.followup.send(
             embed=embeds.success_embed(
                 f"**Channel:** {channel.mention}\n**Region:** {REGION_LABELS.get(reg, reg)}\n"

@@ -1,21 +1,30 @@
 from __future__ import annotations
 
-import asyncio
-import io
 import math
 
 import discord
 
 from helpers import embeds
 from helpers.views import HoloView
-from services.leaderboard import LBRow, render_leaderboard
+from services.leaderboard import LBRow, format_leaderboard
 
 PER_PAGE = 20
 
 
+def _to_row(r: dict) -> LBRow:
+    ep = r.get("epChange")
+    return LBRow(
+        rank=int(r.get("rank") or 0),
+        name=str(r.get("name") or "?"),
+        score=int(r.get("score") or 0),
+        rank_change=int(r.get("rankChange") or 0),
+        score_change=int(ep) if ep is not None else None,
+    )
+
+
 class LeaderboardView(HoloView):
-    """image-rendered leaderboard: prev/next pages + an OFFSET toggle for the rank/score change
-    columns. no ALT columns, no games-per-hour."""
+    """RoboNene-style text leaderboard: prev/next paging, an OFFSET half-page shift, and a MOBILE
+    toggle that narrows the table. no image, so Discord renders every glyph (CN/JP names included)."""
 
     def __init__(
         self,
@@ -27,77 +36,64 @@ class LeaderboardView(HoloView):
         per_page: int = PER_PAGE,
     ) -> None:
         super().__init__(timeout=180, restrict_to=restrict_to)
-        self.rows = rows
+        self.entries = [_to_row(r) for r in rows]
         self.title = title
         self.thumb = thumb
         self.per_page = per_page
-        self.page = 1
+        self.page = 0
+        self.mobile = False
         self.offset = False
-        self.total_pages = max(1, math.ceil(len(rows) / per_page))
+        self.total_pages = max(1, math.ceil(len(self.entries) / per_page))
         self._update()
 
     def _update(self) -> None:
-        self.prev.disabled = self.page == 1
-        self.next.disabled = self.page == self.total_pages
-        self.toggle.label = "Hide Change" if self.offset else "Show Change"
+        self.mobile_btn.style = (
+            discord.ButtonStyle.primary if self.mobile else discord.ButtonStyle.secondary
+        )
+        self.offset_btn.style = (
+            discord.ButtonStyle.primary if self.offset else discord.ButtonStyle.secondary
+        )
 
-    def _lbrows(self) -> list[LBRow]:
-        chunk = self.rows[(self.page - 1) * self.per_page : self.page * self.per_page]
-        out: list[LBRow] = []
-        for r in chunk:
-            rank = f"#{r.get('rank', '?')}"
-            score = f"{int(r.get('score', 0)):,}"
-            name = str(r.get("name", "?"))
-            if self.offset:
-                rc = int(r.get("rankChange") or 0)
-                ep = int(r.get("epChange") or 0)
-                change = f"+{ep:,}" if ep > 0 else (f"{ep:,}" if ep else "-")
-                out.append(LBRow(rank, name, [score, change], 1 if rc > 0 else (-1 if rc < 0 else 0), abs(rc)))
-            else:
-                out.append(LBRow(rank, name, [score]))
-        return out
-
-    def _render(self) -> bytes:
-        columns = ["Score", "Change"] if self.offset else ["Score"]
-        return render_leaderboard(self._lbrows(), columns, show_delta=self.offset)
-
-    def _files(self, img: bytes) -> list[discord.File]:
-        return [discord.File(io.BytesIO(img), "lb.png")]
+    def _window(self) -> list[LBRow]:
+        total = len(self.entries)
+        if not total:
+            return []
+        # OFFSET shifts the window half a page so a player near a boundary can see their neighbours;
+        # the modulo wraps it around the whole board (mirrors RoboNene / sbuga)
+        start = (self.page * self.per_page + (10 if self.offset else 0)) % total
+        return [self.entries[(start + i) % total] for i in range(min(self.per_page, total))]
 
     def _embed(self) -> discord.Embed:
         embed = embeds.embed(title=self.title)
-        embed.set_image(url="attachment://lb.png")
+        embed.description = format_leaderboard(self._window(), mobile=self.mobile)
         if self.thumb:
             embed.set_thumbnail(url=self.thumb)
-        embed.set_footer(text=f"Page {self.page}/{self.total_pages}")
+        embed.set_footer(text=f"Page {self.page + 1}/{self.total_pages}")
         return embed
 
     async def send_initial(self, interaction: discord.Interaction) -> None:
-        img = await asyncio.to_thread(self._render)
-        self.message = await interaction.followup.send(
-            embed=self._embed(), files=self._files(img), view=self, wait=True
-        )
+        self.message = await interaction.followup.send(embed=self._embed(), view=self, wait=True)
 
     async def _refresh(self, interaction: discord.Interaction) -> None:
         self._update()
-        img = await asyncio.to_thread(self._render)
-        await interaction.response.edit_message(
-            embed=self._embed(), attachments=self._files(img), view=self
-        )
+        await interaction.response.edit_message(embed=self._embed(), view=self)
 
-    @discord.ui.button(emoji="⬅️", style=discord.ButtonStyle.primary)
+    @discord.ui.button(emoji="⬅️", label="PREV", style=discord.ButtonStyle.secondary)
     async def prev(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        if self.page > 1:
-            self.page -= 1
+        self.page = (self.page - 1) % self.total_pages
         await self._refresh(interaction)
 
-    @discord.ui.button(emoji="➡️", style=discord.ButtonStyle.primary)
+    @discord.ui.button(emoji="➡️", label="NEXT", style=discord.ButtonStyle.secondary)
     async def next(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        if self.page < self.total_pages:
-            self.page += 1
+        self.page = (self.page + 1) % self.total_pages
         await self._refresh(interaction)
 
-    @discord.ui.button(label="Show Change", style=discord.ButtonStyle.secondary)
-    async def toggle(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+    @discord.ui.button(emoji="📲", label="MOBILE", style=discord.ButtonStyle.secondary)
+    async def mobile_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        self.mobile = not self.mobile
+        await self._refresh(interaction)
+
+    @discord.ui.button(emoji="🔃", label="OFFSET", style=discord.ButtonStyle.secondary)
+    async def offset_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         self.offset = not self.offset
         await self._refresh(interaction)

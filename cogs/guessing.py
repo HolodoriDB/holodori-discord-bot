@@ -42,6 +42,7 @@ STAGE_SECONDS = {1: 1.0, 2: 3.0, 3: 5.0, 4: 8.0}
 MAX_STAGE = 4
 GIVEUP_FRACTION = 1 / 4  # non-starter can end after this fraction of the round
 MUSIC_GIVEUP_FRACTION = 1 / 15
+PERM_CACHE_TTL = 300.0  # fallback refetch window; the permissions-update event invalidates sooner
 
 # mode -> (guessType, "Guess The X" title, prompt line)
 MODES: dict[str, tuple[str, str, str]] = {
@@ -81,6 +82,9 @@ class GuessCog(commands.Cog):
     def __init__(self, bot: HolodoriBot) -> None:
         self.bot = bot
         self.rounds: dict[int, dict] = bot.cache.guess_channels
+        # guild_id -> (fetched_at, the guess group's discord command permissions). dropped on the
+        # permissions-update event so an admin toggling the command in a channel applies at once.
+        self._perm_cache: dict[int, tuple[float, list[discord.app_commands.AppCommandPermissions]]] = {}
         self.timeout_task.start()
 
     async def cog_unload(self) -> None:
@@ -270,6 +274,66 @@ class GuessCog(commands.Cog):
             return r
         return None
 
+    # --- command permission gate ---
+
+    @commands.Cog.listener()
+    async def on_raw_app_command_permissions_update(
+        self, payload: discord.RawAppCommandPermissionsUpdateEvent
+    ) -> None:
+        if payload.guild is not None:
+            self._perm_cache.pop(payload.guild.id, None)
+
+    @staticmethod
+    def _channel_allows(
+        perms: list[discord.app_commands.AppCommandPermissions],
+        channel: "discord.abc.GuildChannel | discord.Thread",
+        guild_id: int,
+    ) -> bool:
+        # discord's channel model: default allowed, an "all channels" entry (id == guild_id - 1)
+        # sets the baseline, a specific channel entry overrides it. threads inherit their parent.
+        ids = {channel.id}
+        parent = getattr(channel, "parent_id", None)
+        if parent:
+            ids.add(parent)
+        all_channels = guild_id - 1
+        allowed = True
+        specific: bool | None = None
+        for p in perms:
+            if p.type is not discord.AppCommandPermissionType.channel:
+                continue
+            if p.id in ids:
+                specific = p.permission
+            elif p.id == all_channels:
+                allowed = p.permission
+        return specific if specific is not None else allowed
+
+    async def _guess_denied_here(self, interaction: discord.Interaction) -> bool:
+        """True when the guess group is denied in this channel by discord's command permissions.
+        admins bypass the client-side block (their reply just gets forced ephemeral) and buttons
+        aren't commands at all, so we enforce it. fails open if the permissions can't be resolved."""
+        guild = interaction.guild
+        channel = interaction.channel
+        if guild is None or channel is None:
+            return False
+        cmd = next(
+            (c for c in (getattr(self.bot, "app_commands", None) or []) if c.name == self.guess.name),
+            None,
+        )
+        if cmd is None:
+            return False
+        cached = self._perm_cache.get(guild.id)
+        if cached and time.time() - cached[0] < PERM_CACHE_TTL:
+            perms = cached[1]
+        else:
+            try:
+                perms = (await cmd.fetch_permissions(guild)).permissions
+            except discord.NotFound:
+                perms = []  # no overrides configured -> allowed everywhere
+            except discord.HTTPException:
+                return False  # can't tell -> don't block
+            self._perm_cache[guild.id] = (time.time(), perms)
+        return not self._channel_allows(perms, channel, guild.id)  # type: ignore[arg-type]
+
     # --- start ---
 
     async def _start(self, interaction: discord.Interaction, mode: str) -> None:
@@ -282,13 +346,22 @@ class GuessCog(commands.Cog):
                     embed=embeds.error_embed("Guessing is disabled in this server."), ephemeral=True
                 )
                 return
+        if await self._guess_denied_here(interaction):
+            await interaction.response.send_message(
+                embed=embeds.error_embed("Guessing is disabled in this channel."), ephemeral=True
+            )
+            return
         if channel_id in self.rounds:
             await interaction.response.send_message(
                 embed=embeds.error_embed("A guessing game is already happening here!")
             )
             return
+        # only guild channels can withhold these; in a dm the bot always has them (and discord may
+        # report app_permissions as empty there, which would false-trip this and block dm guessing)
         perms = interaction.app_permissions
-        if not (perms.send_messages and perms.embed_links and perms.attach_files):
+        if interaction.guild is not None and not (
+            perms.send_messages and perms.embed_links and perms.attach_files
+        ):
             await interaction.response.send_message(
                 embed=embeds.error_embed(
                     "I need **Send Messages**, **Embed Links**, and **Attach Files** here to run a round."
@@ -306,10 +379,6 @@ class GuessCog(commands.Cog):
                 embed=embeds.error_embed("Couldn't start that round (asset unavailable). Try again.")
             )
             return
-        data["starter"] = interaction.user.id
-        data["startTime"] = time.time()
-        data["channel"] = interaction.channel
-        self.rounds[channel_id] = data
 
         secs = MODE_TIME.get(mode, GUESS_TIME)
         if mode == "notes":
@@ -329,7 +398,19 @@ class GuessCog(commands.Cog):
             files.append(discord.File(io.BytesIO(data["data"]["image"]), "image.png"))
         if data["data"].get("audio"):
             files.append(discord.File(io.BytesIO(data["data"]["audio"]), "clip.mp3"))
-        await interaction.followup.send(embed=embed, files=files)
+        msg = await interaction.followup.send(embed=embed, files=files, wait=True)
+        # backstop: if discord still forced the puzzle ephemeral (e.g. perms couldn't be resolved
+        # above), no one else can see or play it - turn it into a notice and don't register a
+        # hidden round rather than leave one running that only the starter can see.
+        if msg.flags.ephemeral:
+            await msg.edit(
+                embed=embeds.error_embed("Guessing is disabled in this channel."), attachments=[]
+            )
+            return
+        data["starter"] = interaction.user.id
+        data["startTime"] = time.time()
+        data["channel"] = interaction.channel
+        self.rounds[channel_id] = data
 
     # --- reveal ---
 

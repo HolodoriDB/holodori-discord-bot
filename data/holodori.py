@@ -17,6 +17,11 @@ from services.holodori import HolodoriClient
 
 CACHE_DIR = "cache"
 
+# marathon normal (1) + relay (2): the only event types the bot tracks (leaderboards / graphs /
+# score bonus), matching the backend's _MARATHON_EVENT_TYPES. every other archived event type
+# (login campaigns, story, etc.) is filtered out so it can't appear as a valid event parameter.
+TRACKED_EVENT_TYPES = frozenset({1, 2})
+
 
 class HolodoriData:
     def __init__(self, client: HolodoriClient, *, refresh_interval: int = 300) -> None:
@@ -172,6 +177,9 @@ class HolodoriData:
         if cached and now - cached[0] < ttl:
             return cached[1]
         evs = await self.client.get_events(region, language)
+        # keep only tracked event types (hasData is a safety net: never hide an event we actually
+        # have leaderboard data for, even if its archived type is missing)
+        evs = [e for e in evs if e.type in TRACKED_EVENT_TYPES or e.hasData]
         self._events_cache[key] = (now, evs)
         return evs
 
