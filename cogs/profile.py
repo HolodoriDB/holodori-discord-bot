@@ -84,16 +84,17 @@ class ProfileCog(commands.Cog):
         sub = " · ".join(
             x
             for x in (
-                f"Lv. {info['level']}" if info.get("level") else "",
-                pid,
+                f"Dream Rank {info['level']}" if info.get("level") else "",
                 REGION_LABELS.get(region, region),
             )
             if x
         )
-        head = f"## {discord.utils.escape_markdown(name)}\n-# {sub}"
+        head = f"## {discord.utils.escape_markdown(name)}"
+        if sub:
+            head += f"\n{sub}"  # normal size (not -#), so rank + region stand out
         message = str(info.get("message") or "").strip()
         if message:
-            head += f"\n{discord.utils.escape_markdown(message)}"
+            head += f"\n-# {discord.utils.escape_markdown(message)}"
         header = discord.ui.TextDisplay(head)
 
         fan = p.get("fanMark") or {}
