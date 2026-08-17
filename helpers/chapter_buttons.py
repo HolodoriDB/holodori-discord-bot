@@ -12,12 +12,21 @@ from typing import TYPE_CHECKING, Awaitable, Callable
 
 import discord
 
+from helpers.emojis import emojis
+
 if TYPE_CHECKING:
     from data.models import EventInfo
 
-# (chapter_id, short label, started). "started" = finished or ongoing (not a future chapter).
-Chapter = tuple[str, str, bool]
+# (chapter_id, short label, started, character_id). "started" = finished or ongoing (not future);
+# character_id keys the holomem fanmark emoji.
+Chapter = tuple[str, str, bool, str | None]
 _MAX_ROWS = 4  # leave a row for the command's own controls (song dropdown / page buttons)
+
+
+def fanmark_emoji(character_id: str | None) -> "discord.PartialEmoji | None":
+    # the chapter's holomem fanmark, uploaded as the app emoji chr_<num>_fanmark (see
+    # scripts/upload_emojis.py). None until characterId is populated / the emoji is uploaded.
+    return emojis.fanmark(character_id)
 
 
 def chapters_from_event(ev: "EventInfo | None") -> list[Chapter]:
@@ -30,7 +39,7 @@ def chapters_from_event(ev: "EventInfo | None") -> list[Chapter]:
     for i, (cid, cm) in enumerate(ev.chapterMeta.items()):
         started = cm.startTime is None or cm.startTime <= now_ms
         label = cm.shortName or cm.name or f"Ch {i + 1}"
-        out.append((cid, label, started))
+        out.append((cid, label, started, cm.characterId))
     return out
 
 
@@ -66,9 +75,13 @@ class ChapterButtons:
     def add_to(self, view: discord.ui.View) -> None:
         if not self.active:
             return
-        for i, (cid, label, started) in enumerate(self.chapters[: self._max_rows * 5]):
+        for i, (cid, label, started, char_id) in enumerate(
+            self.chapters[: self._max_rows * 5]
+        ):
             btn = discord.ui.Button(
-                label=(label or "?")[:80], row=self._start_row + i // 5
+                label=(label or "?")[:80],
+                emoji=fanmark_emoji(char_id),
+                row=self._start_row + i // 5,
             )
             self._style(btn, cid, started)
 
@@ -88,7 +101,7 @@ class ChapterButtons:
             self._style(btn, c, started)
 
     def label_of(self, cid: str | None) -> str | None:
-        return next((label for c, label, _ in self.chapters if c == cid), None)
+        return next((label for c, label, *_ in self.chapters if c == cid), None)
 
     def _style(self, btn: discord.ui.Button, cid: str, started: bool) -> None:
         if cid == self.current:

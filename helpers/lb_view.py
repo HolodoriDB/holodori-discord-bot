@@ -1,20 +1,18 @@
 from __future__ import annotations
 
 import math
-import time
 from typing import Awaitable, Callable
 
 import discord
 
 from helpers import embeds
+from helpers.chapter_buttons import Chapter, fanmark_emoji
 from helpers.views import HoloView
 from services.leaderboard import LBRow, format_leaderboard
 
 PER_PAGE = 20
 _MAX_CHAPTER_ROWS = 4  # leave one row (of the 5) for the page controls
 
-# (chapter_id, short label, started). "started" = finished or ongoing (not a future chapter).
-Chapter = tuple[str, str, bool]
 Fetch = Callable[[str], Awaitable[list[dict]]]
 
 
@@ -76,10 +74,11 @@ class LeaderboardView(HoloView):
         page_btns = [self.prev, self.next, self.mobile_btn, self.offset_btn]
         for b in page_btns:
             self.remove_item(b)
-        now_ms = int(time.time() * 1000)
         shown = self._chapters[: _MAX_CHAPTER_ROWS * 5]
-        for i, (cid, label, started) in enumerate(shown):
-            btn = discord.ui.Button(label=label[:80] or "?", row=i // 5)
+        for i, (cid, label, started, char_id) in enumerate(shown):
+            btn = discord.ui.Button(
+                label=label[:80] or "?", emoji=fanmark_emoji(char_id), row=i // 5
+            )
             self._style_chapter(btn, cid, started)
 
             async def cb(interaction: discord.Interaction, cid=cid) -> None:
@@ -135,7 +134,7 @@ class LeaderboardView(HoloView):
         )
 
     def _chapter_label(self) -> str | None:
-        return next((l for c, l, _ in self._chapters if c == self.current_chapter), None)
+        return next((l for c, l, *_ in self._chapters if c == self.current_chapter), None)
 
     def _window(self) -> list[LBRow]:
         total = len(self.entries)

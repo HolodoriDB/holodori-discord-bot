@@ -64,6 +64,49 @@ async def _main() -> None:
                     emoji = await client.create_application_emoji(name=name, image=img)
                     result[name] = _record(emoji)
                     print(f"uploaded {name} -> {emoji}")
+
+                # holomem fanmark emojis (chr_<num>_fanmark), one per holomem, from the public
+                # extracted-asset cdn (img_chr_motif_sub_<num>). used as the event chapter-button emojis.
+                info: dict = {}
+                rows: list = []
+                try:
+                    async with sess.get(f"{base}/api/asset_hashes") as r:
+                        r.raise_for_status()
+                        info = await r.json()
+                    async with sess.get(f"{base}/api/holomem/list") as r:
+                        r.raise_for_status()
+                        holomems = await r.json()
+                    rows = holomems if isinstance(holomems, list) else holomems.get("holomems", [])
+                except Exception as e:
+                    print(f"fanmark fetch skipped: {e}")
+                cdn = info.get("cdn") or base
+                hashes = info.get("hashes") or {}
+                for hm in rows:
+                    cid = hm.get("id")
+                    if not cid:
+                        continue
+                    num = cid.split("-")[-1]
+                    name = f"chr_{num}_fanmark"
+                    emoji = existing.get(name)
+                    if emoji and not force:
+                        result[name] = _record(emoji)
+                        continue
+                    if emoji and force:
+                        await emoji.delete()
+                    asset = f"assetbundles/img_chr_motif_sub_{num}/img_chr_motif_sub_{num}"
+                    h = hashes.get(f"assetbundles/img_chr_motif_sub_{num}")
+                    url = f"{cdn}/assets/{asset}.webp" + (f"?hash={h}" if h else "")
+                    try:
+                        async with sess.get(url) as r:
+                            if r.status != 200:
+                                print(f"skip {name}: cdn {r.status}")
+                                continue
+                            img = _to_discord_image(await r.read())
+                        emoji = await client.create_application_emoji(name=name, image=img)
+                        result[name] = _record(emoji)
+                        print(f"uploaded {name} -> {emoji}")
+                    except Exception as e:
+                        print(f"fanmark {name} failed: {e}")
         finally:
             with open(EMOJIS_FILE, "w", encoding="utf-8") as f:
                 json.dump(result, f, indent=2)

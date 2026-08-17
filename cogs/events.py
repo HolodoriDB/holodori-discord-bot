@@ -151,7 +151,8 @@ class EventsCog(commands.Cog):
         event: str | None = None,
         region: str = "default",
     ) -> None:
-        from helpers.lb_view import Chapter, LeaderboardView
+        from helpers.chapter_buttons import chapters_from_event
+        from helpers.lb_view import LeaderboardView
 
         await interaction.response.defer(thinking=True)
         assert self.bot.holo
@@ -170,14 +171,8 @@ class EventsCog(commands.Cog):
         current_chapter = data.get("chapterId")
 
         # relay events get a row of holomem chapter buttons; find the served event's chapter meta
-        chapters: list[Chapter] = []
         ev = next((e for e in await self._events(region, interaction.user.id) if e.eventId == eid), None)
-        if ev and len(ev.chapterMeta) > 1:
-            now_ms = int(time.time() * 1000)
-            for i, (cid, cm) in enumerate(ev.chapterMeta.items()):
-                started = cm.startTime is None or cm.startTime <= now_ms
-                label = cm.shortName or cm.name or f"Ch {i + 1}"
-                chapters.append((cid, label, started))
+        chapters = chapters_from_event(ev)
 
         async def fetch(cid: str) -> list[dict]:
             d = await self.bot.holo.get_event_leaderboard(  # type: ignore[union-attr]
