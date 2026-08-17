@@ -45,6 +45,36 @@ class HoloView(discord.ui.View):
                 pass
 
 
+class HoloLayoutView(discord.ui.LayoutView):
+    """components-v2 base (LayoutView): same restrict_to gate + message tracking + disable-on-timeout
+    as HoloView, for cards whose buttons live inside a Container instead of under the message."""
+
+    def __init__(self, *, timeout: float | None = 180, restrict_to: int | None = None) -> None:
+        super().__init__(timeout=timeout)
+        self.message: discord.Message | None = None
+        self.restrict_to = restrict_to
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if self.restrict_to is not None and interaction.user.id != self.restrict_to:
+            await interaction.response.send_message(
+                "You can't interact with this — run the command yourself.", ephemeral=True
+            )
+            return False
+        return True
+
+    async def on_timeout(self) -> None:
+        changed = False
+        for item in self.walk_children():
+            if isinstance(item, (discord.ui.Button, discord.ui.Select)) and not item.disabled:
+                item.disabled = True
+                changed = True
+        if changed and self.message:
+            try:
+                await self.message.edit(view=self)
+            except discord.HTTPException:
+                pass
+
+
 class LinkButtonView(HoloView):
     """non-expiring view holding one or more link buttons."""
 

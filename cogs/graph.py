@@ -12,7 +12,7 @@ from discord.ext import commands
 from helpers import embeds, text_commands, timezones
 from helpers.autocompletes import REGION_CHOICES, REGION_LABELS, autocompletes
 from helpers.chapter_buttons import ChapterButtons, chapters_from_event
-from helpers.views import HoloView
+from helpers.views import HoloLayoutView, HoloView
 from services.graph import render_graph as _render_graph_img
 from services.graph import render_heatmap as _render_heatmap_img
 from services.holodori import HolodoriError
@@ -25,6 +25,8 @@ if TYPE_CHECKING:
 
 _TIER = (90, 150, 255, 255)
 _USER = (120, 200, 130, 255)
+# player-card container accent per region (matches the graph line palette: us blue / as green / jp red)
+_REGION_ACCENT = {"us": 0x5B93EC, "as": 0x4AD79A, "jp": 0xE76A6A}
 _MODE_CHOICES = [
     app_commands.Choice(name="Total", value="total"),
     app_commands.Choice(name="Song Scores", value="song"),
@@ -592,22 +594,17 @@ class GraphCog(commands.Cog):
         if view is not None:
             view.message = msg
 
-    def _player_card(
-        self, player: dict, *, restrict_to: int
-    ) -> tuple[discord.Embed, "_PlayerCardView"]:
-        # {Name} - {region} card: just the Points stat, plus Graph / Heatmap / Cutoff buttons that
-        # act on this player's current rank+region
-        region = player["region"]
-        embed = embeds.embed(title=f"{player['name']} - {REGION_LABELS.get(region, region)}")
-        pts = player.get("points")
-        embed.add_field(
-            name="Player Statistics",
-            value=f"**Points:** {int(pts):,} EP" if pts is not None else "**Points:** —",
-            inline=False,
+    def _player_card_view(self, player: dict, *, restrict_to: int) -> "_PlayerCardView":
+        # a components-v2 card: the {Name} - {region} heading, the Points stat, and the Graph /
+        # Heatmap / Cutoff buttons all live INSIDE one accent Container (buttons inside the "embed")
+        return _PlayerCardView(
+            self,
+            region=player["region"],
+            rank=int(player["rank"]),
+            name=str(player["name"]),
+            points=player.get("points"),
+            restrict_to=restrict_to,
         )
-        embed.set_footer(text=f"Currently rank {player['rank']}")
-        view = _PlayerCardView(self, region=region, rank=int(player["rank"]), restrict_to=restrict_to)
-        return embed, view
 
     @commands.command(name="player")
     async def p_player(self, ctx: commands.Context, *, query: str = "") -> None:
@@ -638,21 +635,11 @@ class GraphCog(commands.Cog):
         top = results[0]
         close = [r for r in results if top["match"] - r["match"] <= 6][:10]
         if len(close) >= 2:
-            view = _PlayerPickView(self, close, restrict_to=ctx.author.id)
-            view.message = await ctx.reply(
-                embed=embeds.embed(
-                    title="Multiple players found",
-                    description=(
-                        f"More than one player matches **{discord.utils.escape_markdown(query)}**. "
-                        "Pick one below."
-                    ),
-                ),
-                view=view,
-                mention_author=False,
-            )
+            pick = _PlayerPickView(self, close, query, restrict_to=ctx.author.id)
+            pick.message = await ctx.reply(view=pick, mention_author=False)
             return
-        embed, view = self._player_card(top, restrict_to=ctx.author.id)
-        view.message = await ctx.reply(embed=embed, view=view, mention_author=False)
+        card = self._player_card_view(top, restrict_to=ctx.author.id)
+        card.message = await ctx.reply(view=card, mention_author=False)
 
 
 class _GraphView(HoloView):
@@ -825,15 +812,46 @@ class _HeatmapView(HoloView):
         )
 
 
-class _PlayerCardView(HoloView):
-    """the %player card's buttons: view this player's graph, heatmap, or cutoff stats (each acts on
-    their current rank+region, and posts as a follow-up so the card itself stays put)."""
+class _PlayerCardView(HoloLayoutView):
+    """components-v2 %player card: the {Name} - {region} heading, the Points stat, and the Graph /
+    Heatmap / Cutoff buttons all sit INSIDE one accent Container (buttons inside the "embed"). each
+    button posts its own view as a follow-up so the card itself stays put."""
 
-    def __init__(self, cog: GraphCog, *, region: str, rank: int, restrict_to: int) -> None:
+    def __init__(
+        self,
+        cog: GraphCog,
+        *,
+        region: str,
+        rank: int,
+        name: str,
+        points: int | None,
+        restrict_to: int,
+    ) -> None:
         super().__init__(timeout=180, restrict_to=restrict_to)
         self.cog = cog
         self.region = region
         self.rank = rank
+        label = REGION_LABELS.get(region, region)
+        pts = f"{int(points):,} EP" if points is not None else "—"
+        container = discord.ui.Container(
+            accent_colour=discord.Colour(_REGION_ACCENT.get(region, 0x8B5CF6))
+        )
+        container.add_item(
+            discord.ui.TextDisplay(f"## {discord.utils.escape_markdown(name)} - {label}")
+        )
+        container.add_item(discord.ui.TextDisplay(f"**Player Statistics**\n**Points:** {pts}"))
+        container.add_item(discord.ui.TextDisplay(f"-# Currently rank {rank}"))
+        row = discord.ui.ActionRow()
+        for lbl, emo, cb in (
+            ("Graph", "📈", self._on_graph),
+            ("Heatmap", "🔥", self._on_heatmap),
+            ("Cutoff", "✂️", self._on_cutoff),
+        ):
+            btn = discord.ui.Button(label=lbl, emoji=emo, style=discord.ButtonStyle.primary)
+            btn.callback = cb  # type: ignore[assignment]
+            row.add_item(btn)
+        container.add_item(row)
+        self.add_item(container)
 
     async def _send(
         self,
@@ -849,24 +867,21 @@ class _PlayerCardView(HoloView):
             embed=embed, files=files, view=view, wait=True
         )
 
-    @discord.ui.button(label="Graph", emoji="📈", style=discord.ButtonStyle.primary)
-    async def graph_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+    async def _on_graph(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(thinking=True)
         embed, files, view = await self.cog._graph_payload(
             user_id=interaction.user.id, region=self.region, tier=self.rank
         )
         await self._send(interaction, embed, files, view)
 
-    @discord.ui.button(label="Heatmap", emoji="🔥", style=discord.ButtonStyle.primary)
-    async def heatmap_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+    async def _on_heatmap(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(thinking=True)
         embed, files, view = await self.cog._heatmap_payload(
             user_id=interaction.user.id, region=self.region, tier=self.rank
         )
         await self._send(interaction, embed, files, view)
 
-    @discord.ui.button(label="Cutoff", emoji="✂️", style=discord.ButtonStyle.primary)
-    async def cutoff_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+    async def _on_cutoff(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(thinking=True)
         em = await self.cog._cutoff_text_embed(
             user_id=interaction.user.id, region=self.region, tier=self.rank
@@ -874,14 +889,24 @@ class _PlayerCardView(HoloView):
         await interaction.followup.send(embed=em)
 
 
-class _PlayerPickView(HoloView):
-    """disambiguation dropdown when a %player query matches more than one player (e.g. the same
-    name on two regions); picking one swaps the message to that player's card."""
+class _PlayerPickView(HoloLayoutView):
+    """components-v2 disambiguation dropdown when a %player query matches more than one player (e.g.
+    the same name on two regions); picking one edits the message into that player's card (v2 -> v2)."""
 
-    def __init__(self, cog: GraphCog, candidates: list[dict], *, restrict_to: int) -> None:
+    def __init__(
+        self, cog: GraphCog, candidates: list[dict], query: str, *, restrict_to: int
+    ) -> None:
         super().__init__(timeout=120, restrict_to=restrict_to)
         self.cog = cog
         self.candidates = candidates
+        container = discord.ui.Container(accent_colour=discord.Colour(0x8B5CF6))
+        container.add_item(
+            discord.ui.TextDisplay(
+                "## Multiple players found\n"
+                f"More than one player matches **{discord.utils.escape_markdown(query)}**. "
+                "Pick one below."
+            )
+        )
         options = [
             discord.SelectOption(
                 label=str(c["name"])[:100],
@@ -893,15 +918,18 @@ class _PlayerPickView(HoloView):
             )
             for i, c in enumerate(candidates)
         ]
-        self._select = discord.ui.Select(placeholder="Which player?", options=options)
-        self._select.callback = self._on_pick  # type: ignore[method-assign]
-        self.add_item(self._select)
+        select = discord.ui.Select(placeholder="Which player?", options=options)
+        select.callback = self._on_pick  # type: ignore[assignment]
+        row = discord.ui.ActionRow()
+        row.add_item(select)
+        container.add_item(row)
+        self.add_item(container)
 
     async def _on_pick(self, interaction: discord.Interaction) -> None:
         idx = int(interaction.data["values"][0])  # type: ignore[index,arg-type]
-        embed, view = self.cog._player_card(self.candidates[idx], restrict_to=self.restrict_to or 0)
-        await interaction.response.edit_message(embed=embed, view=view)
-        view.message = interaction.message
+        card = self.cog._player_card_view(self.candidates[idx], restrict_to=self.restrict_to or 0)
+        await interaction.response.edit_message(view=card)
+        card.message = interaction.message
 
 
 async def setup(bot: HolodoriBot) -> None:
