@@ -319,6 +319,14 @@ class HolodoriClient:
         data = await self._get("/api/events/player_search", q=query, region=region)
         return data.get("players") or [] if isinstance(data, dict) else []
 
+    async def get_profile(self, public_id: str, region: str = "us", lang: str | None = None) -> dict:
+        # full profile by public id (8-char friend code); {region, publicUserId, profile:{...}}
+        return await self._get("/api/profile", id=public_id, region=region, lang=lang or self.lang)
+
+    async def get_profile_palette(self, public_id: str, region: str = "us") -> bytes:
+        # the proxied gated custom-palette jpg bytes (only for profiles with a custom palette set)
+        return await self._get_bytes("/api/profile/palette", id=public_id, region=region)
+
     # --- misc data ---
 
     async def get_items(self, lang: str | None = None) -> list[dict]:
