@@ -160,6 +160,7 @@ class Alias(_Model):
     id: int
     target_id: str
     alias: str
+    romaji: list[str] = []  # backend-computed romanizations of the alias (search keys, not shown)
     region: str | None = None
     created_at: str | None = None
 

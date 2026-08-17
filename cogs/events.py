@@ -74,6 +74,29 @@ class EventsCog(commands.Cog):
         embed, files = await details.event_embed(self.bot, ev)
         await interaction.followup.send(embed=embed, files=files)
 
+    @event.command(name="aliases", description="Every name/romanization/alias this event is found by.")
+    @app_commands.describe(event="Event.", region="Game server region.")
+    @app_commands.choices(region=REGION_CHOICES)
+    @app_commands.autocomplete(event=autocompletes.event())
+    async def aliases(
+        self, interaction: discord.Interaction, event: str, region: str = "default"
+    ) -> None:
+        await interaction.response.defer(thinking=True)
+        assert self.bot.data
+        region = await self._region(interaction.user.id, region)
+        events = await self._events(region, interaction.user.id)
+        ev = next((e for e in events if e.eventId == event), None)
+        if ev is None:
+            await interaction.followup.send(embed=embeds.error_embed("Couldn't find that event."))
+            return
+        keys = self.bot.data.event_search_keys(ev.eventId)
+        embed = embeds.embed(
+            title=f"Searchable as - {ev.eventId}",
+            description="\n".join(f"- `{k}`" for k in keys) if keys else "No extra search keys yet.",
+        )
+        embed.set_footer(text=f"{ev.eventId} - {len(keys)} keys (auto + manual)")
+        await interaction.followup.send(embed=embed)
+
     @event.command(name="schedule", description="View the current and next event.")
     @app_commands.describe(region="Game server region.")
     @app_commands.choices(region=REGION_CHOICES)

@@ -169,6 +169,11 @@ class HolodoriClient:
     async def remove_alias(self, kind: str, alias_id: int) -> None:
         await self._send("DELETE", f"/api/aliases/{kind}", json={"alias_id": alias_id})
 
+    async def get_search_index(self, kind: str) -> dict[str, list[str]]:
+        # {id: [auto search keys]} = all-language names + romanizations (deduped), for the matcher
+        data = await self._get(f"/api/search_index/{kind}")
+        return data.get("keys", {})
+
     def unsquished_image_url(self, path: str | None) -> str | None:
         # squished-into-pot art (card full art, event logo/banner) has a _unsquished.webp sibling
         # baked at its true aspect by the extractor; point straight at it, no client-side unsquish.

@@ -27,6 +27,7 @@ TRACKED_EVENT_TYPES = frozenset({1, 2})
 # shows up quickly. NOTE: nothing matches against these yet - this is just the copy.
 ALIAS_KINDS = ("song", "event", "holomem")
 ALIAS_CACHE = "aliases.json"
+SEARCH_KEYS_CACHE = "search_keys.json"
 ALIAS_REFRESH_INTERVAL = 120
 
 
@@ -44,8 +45,14 @@ class HolodoriData:
         self._groups: list[HolomemGroup] = []
         self._items: list[dict] = []
         self._events_cache: dict[tuple[str, str], tuple[float, list[EventInfo]]] = {}
-        # kind -> {target_id: sorted alias list}; the local mirror of the backend alias store
+        # kind -> {target_id: sorted alias list}; the local mirror of the backend alias store (manual
+        # aliases only - what /alias list shows)
         self._aliases: dict[str, dict[str, list[str]]] = {}
+        # kind -> {target_id: [alias + its romaji]}: manual aliases as MATCH keys
+        self._alias_keys: dict[str, dict[str, list[str]]] = {}
+        # kind -> {target_id: [auto keys]}: all-language names + romanizations, from the backend
+        # search-index (deduped there). the automatic aliases; folded into the *_aliased matchers.
+        self._auto_keys: dict[str, dict[str, list[str]]] = {}
         self._task: asyncio.Task | None = None
         self._alias_task: asyncio.Task | None = None
 
@@ -54,6 +61,7 @@ class HolodoriData:
     async def start(self) -> None:
         self._load_from_disk()
         self._load_aliases()
+        self._load_search_keys()
         try:
             await self.refresh()
         except Exception as e:
@@ -62,6 +70,10 @@ class HolodoriData:
             await self.refresh_aliases()
         except Exception as e:
             LOGGING.warnprint(f"holodori initial alias refresh failed: {e}")
+        try:
+            await self._refresh_auto_keys()
+        except Exception as e:
+            LOGGING.warnprint(f"holodori initial search-index refresh failed: {e}")
         self._task = asyncio.create_task(self._poll())
         self._alias_task = asyncio.create_task(self._poll_aliases())
 
@@ -99,6 +111,10 @@ class HolodoriData:
         self._apply(cards, songs, holomems, groups, items)
         self._revision = info.revision
         self._persist()
+        try:
+            await self._refresh_auto_keys()  # auto search keys move with the game-data revision
+        except Exception as e:
+            LOGGING.warnprint(f"holodori search-index refresh failed: {e}")
         LOGGING.infoprint(
             f"holodori data refreshed (rev {info.revision}): "
             f"{len(cards)} cards, {len(songs)} songs, {len(holomems)} holomems"
@@ -180,11 +196,16 @@ class HolodoriData:
             aliases = await self.client.get_aliases(kind)
         except Exception:
             return False
-        by_target: dict[str, list[str]] = {}
+        by_target: dict[str, list[str]] = {}  # manual aliases (display)
+        keys_by_target: dict[str, list[str]] = {}  # alias + its romaji (match keys)
         for a in aliases:
             by_target.setdefault(a.target_id, []).append(a.alias)
+            keys = keys_by_target.setdefault(a.target_id, [])
+            keys.append(a.alias)
+            keys.extend(a.romaji)
         for values in by_target.values():
             values.sort()
+        self._alias_keys[kind] = keys_by_target
         if by_target != self._aliases.get(kind, {}):
             self._aliases[kind] = by_target
             return True
@@ -201,11 +222,14 @@ class HolodoriData:
 
     def add_alias_local(self, kind: str, target_id: str, alias: str) -> None:
         """Record an alias just added through the api so the local copy is current at once, without
-        waiting for the next poll. `alias` is already preprocessed."""
+        waiting for the next poll. `alias` is already preprocessed; its romaji fills in on the poll."""
         values = self._aliases.setdefault(kind, {}).setdefault(target_id, [])
         if alias not in values:
             values.append(alias)
             values.sort()
+        keys = self._alias_keys.setdefault(kind, {}).setdefault(target_id, [])
+        if alias not in keys:
+            keys.append(alias)
         self._save_aliases()
 
     def remove_alias_local(self, kind: str, target_id: str, alias: str) -> None:
@@ -215,13 +239,17 @@ class HolodoriData:
             values.remove(alias)
             if not values:
                 del by_target[target_id]
+        # drop the alias string from the match keys; its stale romaji clears on the next poll
+        keys = self._alias_keys.setdefault(kind, {}).get(target_id)
+        if keys and alias in keys:
+            keys.remove(alias)
         self._save_aliases()
 
     def _save_aliases(self) -> None:
         os.makedirs(CACHE_DIR, exist_ok=True)
         try:
             with open(self._path(ALIAS_CACHE), "w", encoding="utf-8") as f:
-                json.dump(self._aliases, f, ensure_ascii=False)
+                json.dump({"aliases": self._aliases, "keys": self._alias_keys}, f, ensure_ascii=False)
         except OSError as e:
             LOGGING.warnprint(f"holodori alias cache write failed: {e}")
 
@@ -232,9 +260,10 @@ class HolodoriData:
         try:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            self._aliases = {
-                k: {t: list(v) for t, v in m.items()} for k, m in data.items()
-            }
+            aliases = data.get("aliases", {}) if "aliases" in data else data  # tolerate old shape
+            keys = data.get("keys", {})
+            self._aliases = {k: {t: list(v) for t, v in m.items()} for k, m in aliases.items()}
+            self._alias_keys = {k: {t: list(v) for t, v in m.items()} for k, m in keys.items()}
         except Exception as e:
             LOGGING.warnprint(f"holodori alias cache load failed: {e}")
 
@@ -245,6 +274,55 @@ class HolodoriData:
                 await self.refresh_aliases()
             except Exception as e:
                 LOGGING.warnprint(f"holodori alias refresh failed: {e}")
+
+    # --- automatic search keys (all-language names + romanizations), mirrored from the backend
+    #     search-index. deduped there. NOT stored in the db.
+
+    async def _refresh_auto_keys(self) -> None:
+        changed = False
+        for kind in ALIAS_KINDS:
+            try:
+                keys = await self.client.get_search_index(kind)
+            except Exception:
+                continue
+            self._auto_keys[kind] = {t: list(v) for t, v in keys.items()}
+            changed = True
+        if changed:
+            self._save_search_keys()
+
+    def _save_search_keys(self) -> None:
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        try:
+            with open(self._path(SEARCH_KEYS_CACHE), "w", encoding="utf-8") as f:
+                json.dump(self._auto_keys, f, ensure_ascii=False)
+        except OSError as e:
+            LOGGING.warnprint(f"holodori search-index cache write failed: {e}")
+
+    def _load_search_keys(self) -> None:
+        path = self._path(SEARCH_KEYS_CACHE)
+        if not os.path.exists(path):
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            self._auto_keys = {k: {t: list(v) for t, v in m.items()} for k, m in data.items()}
+        except Exception as e:
+            LOGGING.warnprint(f"holodori search-index cache load failed: {e}")
+
+    # every extra match key for an item: auto (all-lang names + romaji) + manual aliases + their romaji
+    def _search_keys(self, kind: str, target_id: str) -> list[str]:
+        keys = list(self._auto_keys.get(kind, {}).get(target_id, ()))
+        keys.extend(self._alias_keys.get(kind, {}).get(target_id, ()))
+        return sorted(set(keys))
+
+    def song_search_keys(self, song_id: str) -> list[str]:
+        return self._search_keys("song", song_id)
+
+    def event_search_keys(self, event_id: str) -> list[str]:
+        return self._search_keys("event", event_id)
+
+    def holomem_search_keys(self, holomem_id: str) -> list[str]:
+        return self._search_keys("holomem", holomem_id)
 
     # --- accessors ---
 
@@ -305,24 +383,25 @@ class HolodoriData:
     def match_holomem(self, query: str) -> Holomem | None:
         return search.best_match(query, self._holomems, lambda h: (h.name, h.shortName, h.id))
 
-    # --- alias-aware fuzzy matching (folds the local alias copy into the keys). NOT wired into any
-    #     autocomplete/command yet; here for later. events pass their list in (they are per-region).
+    # --- alias-aware fuzzy matching: folds the full key set (auto all-language names + romanizations
+    #     + manual aliases + their romaji) so a query in ANY language/script matches. NOT wired into
+    #     any live autocomplete/command yet. events pass their list in (they are per-region).
 
     def search_songs_aliased(self, query: str, limit: int = 25) -> list[Song]:
         return search.rank(
-            query, self._songs, lambda s: (s.title, s.id, *self.song_aliases(s.id)), limit
+            query, self._songs, lambda s: (s.title, s.id, *self.song_search_keys(s.id)), limit
         )
 
     def match_song_aliased(self, query: str) -> Song | None:
         return search.best_match(
-            query, self._songs, lambda s: (s.title, s.id, *self.song_aliases(s.id))
+            query, self._songs, lambda s: (s.title, s.id, *self.song_search_keys(s.id))
         )
 
     def search_holomems_aliased(self, query: str, limit: int = 25) -> list[Holomem]:
         return search.rank(
             query,
             self._holomems,
-            lambda h: (h.name, h.shortName, h.id, *self.holomem_aliases(h.id)),
+            lambda h: (h.name, h.shortName, h.id, *self.holomem_search_keys(h.id)),
             limit,
         )
 
@@ -330,17 +409,17 @@ class HolodoriData:
         return search.best_match(
             query,
             self._holomems,
-            lambda h: (h.name, h.shortName, h.id, *self.holomem_aliases(h.id)),
+            lambda h: (h.name, h.shortName, h.id, *self.holomem_search_keys(h.id)),
         )
 
     def search_events_aliased(
         self, events: list[EventInfo], query: str, limit: int = 25
     ) -> list[EventInfo]:
         return search.rank(
-            query, events, lambda e: (e.name, e.eventId, *self.event_aliases(e.eventId)), limit
+            query, events, lambda e: (e.name, e.eventId, *self.event_search_keys(e.eventId)), limit
         )
 
     def match_event_aliased(self, events: list[EventInfo], query: str) -> EventInfo | None:
         return search.best_match(
-            query, events, lambda e: (e.name, e.eventId, *self.event_aliases(e.eventId))
+            query, events, lambda e: (e.name, e.eventId, *self.event_search_keys(e.eventId))
         )

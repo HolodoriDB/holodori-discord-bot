@@ -84,9 +84,10 @@ class AliasCog(commands.Cog):
             return (m.id, m.name) if m else None
         events = await self._events()
         ev = next((e for e in events if e.eventId == query), None) or search.best_match(
-            query, events, lambda e: (e.name, e.eventId)
+            query, events, lambda e: (e.eventId, e.name)
         )
-        return (ev.eventId, ev.name) if ev else None
+        # events have no real name (only a generic label), so the id is the identifier we show
+        return (ev.eventId, ev.eventId) if ev else None
 
     def _local_aliases(self, kind: str, target_id: str) -> list[str]:
         assert self.bot.data
@@ -107,8 +108,7 @@ class AliasCog(commands.Cog):
         if kind == "holomem":
             m = self.bot.data.get_holomem(target_id)
             return f"**{m.name}** (`{target_id}`)" if m else f"holomem `{target_id}`"
-        ev = next((e for e in await self._events() if e.eventId == target_id), None)
-        return f"**{ev.name}** (`{target_id}`)" if ev else f"event `{target_id}`"
+        return f"event `{target_id}`"  # events are identified by id, not a name
 
     async def _add_error(self, error: HolodoriError, alias: str, kind: str) -> discord.Embed:
         assert self.bot.holo
@@ -259,19 +259,19 @@ class AliasCog(commands.Cog):
 
     # event
     @alias_event.command(name="list", description="Authorized only; view an event's aliases.")
-    @app_commands.autocomplete(event=autocompletes.event())
+    @app_commands.autocomplete(event=autocompletes.event_id())
     @app_commands.describe(event="Event name or ID.")
     async def event_list(self, interaction: discord.Interaction, event: str) -> None:
         await self._do_list(interaction, "event", event)
 
     @alias_event.command(name="add", description="Authorized only; add an event alias.")
-    @app_commands.autocomplete(event=autocompletes.event())
+    @app_commands.autocomplete(event=autocompletes.event_id())
     @app_commands.describe(event="Event name or ID.", alias="Alias to add.")
     async def event_add(self, interaction: discord.Interaction, event: str, alias: str) -> None:
         await self._do_add(interaction, "event", event, alias)
 
     @alias_event.command(name="remove", description="Authorized only; remove an event alias.")
-    @app_commands.autocomplete(event=autocompletes.event())
+    @app_commands.autocomplete(event=autocompletes.event_id())
     @app_commands.describe(event="Event name or ID.", alias="Alias to remove.")
     async def event_remove(self, interaction: discord.Interaction, event: str, alias: str) -> None:
         await self._do_remove(interaction, "event", event, alias)

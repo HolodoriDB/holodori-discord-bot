@@ -53,6 +53,26 @@ class HolomemCog(commands.Cog):
             return
         await interaction.followup.send(embed=details.holomem_embed(self.bot, *found))
 
+    @holomem.command(name="aliases", description="Every name/romanization/alias this holomem is found by.")
+    @app_commands.describe(holomem="Holomem name.")
+    @app_commands.autocomplete(holomem=autocompletes.holomem())
+    async def aliases(self, interaction: discord.Interaction, holomem: str) -> None:
+        await interaction.response.defer(thinking=True)
+        assert self.bot.data
+        member = self.bot.data.match_holomem(holomem)
+        if not member:
+            await interaction.followup.send(
+                embed=embeds.error_embed(f"Couldn't find a holomem matching `{holomem}`.")
+            )
+            return
+        keys = self.bot.data.holomem_search_keys(member.id)
+        embed = embeds.embed(
+            title=f"Searchable as - {member.name}",
+            description="\n".join(f"- `{k}`" for k in keys) if keys else "No extra search keys yet.",
+        )
+        embed.set_footer(text=f"{member.id} - {len(keys)} keys (auto + manual)")
+        await interaction.followup.send(embed=embed)
+
     @holomem.command(name="leaderboard", description="Live per-holomem rating rank.")
     @app_commands.describe(holomem="Holomem name.", region="Game server region.")
     @app_commands.autocomplete(holomem=autocompletes.holomem())

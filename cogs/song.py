@@ -136,6 +136,26 @@ class SongCog(commands.Cog):
             return
         await interaction.followup.send(embed=details.song_embed(self.bot, detail))
 
+    @song.command(name="aliases", description="Every name/romanization/alias this song is found by.")
+    @app_commands.describe(song="Song title.")
+    @app_commands.autocomplete(song=autocompletes.song())
+    async def aliases(self, interaction: discord.Interaction, song: str) -> None:
+        await interaction.response.defer(thinking=True)
+        assert self.bot.data
+        s = self.bot.data.match_song(song)
+        if not s:
+            await interaction.followup.send(
+                embed=embeds.error_embed(f"Couldn't find a song matching `{song}`.")
+            )
+            return
+        keys = self.bot.data.song_search_keys(s.id)
+        embed = embeds.embed(
+            title=f"Searchable as - {s.title}",
+            description="\n".join(f"- `{k}`" for k in keys) if keys else "No extra search keys yet.",
+        )
+        embed.set_footer(text=f"Song ID {s.id} - {len(keys)} keys (auto + manual)")
+        await interaction.followup.send(embed=embed)
+
     @song.command(name="difficulty", description="Find all songs of a level.")
     @app_commands.describe(level="Level to search (1-40).")
     async def difficulty(self, interaction: discord.Interaction, level: int) -> None:
