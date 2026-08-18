@@ -131,6 +131,16 @@ class HolodoriClient:
         self._asset_info = AssetInfo.model_validate(await self._get("/api/asset_hashes"))
         return self._asset_info
 
+    async def ensure_asset_info(self) -> None:
+        # asset info (incl. the public cdn base) loads in the background after startup; a command
+        # that builds public asset urls before that must load it, or asset_url falls back to the
+        # gated /api/asset path that discord can't fetch
+        if not self._asset_info.cdn:
+            try:
+                await self.get_asset_info()
+            except HolodoriError:
+                pass
+
     def asset_url(self, path: str) -> str:
         """build a public url for an asset path (caller includes the extension, e.g. '<thumb>.webp').
 

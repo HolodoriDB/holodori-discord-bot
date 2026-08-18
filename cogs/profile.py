@@ -88,6 +88,7 @@ class ProfileCog(commands.Cog):
     ) -> None:
         assert self.bot.holo and self.bot.user_data
         await interaction.response.defer(thinking=True)
+        await self.bot.holo.ensure_asset_info()  # need the public cdn base for the badge/palette urls
         region = await self._region(interaction.user.id, region)
         pid = id.strip().upper()
         if not pid:
@@ -134,12 +135,14 @@ class ProfileCog(commands.Cog):
         # verified mark) - falls back to no emoji if it isn't uploaded
         fan = p.get("fanMark") or {}
         mark = emojis.fanmark(fan.get("assetId")) if fan.get("assetId") else None
-        head = f"## {f'{mark} ' if mark else ''}{discord.utils.escape_markdown(name)}"
+        head = f"## {discord.utils.escape_markdown(name)}{f' {mark}' if mark else ''}"
         if sub:
             head += f"\n{sub}"  # normal size (not -#), so rank + region stand out
         message = str(info.get("message") or "").strip()
         if message:
-            head += f"\n-# {discord.utils.escape_markdown(message)}"
+            # the bio as a blockquote, escaped + quoted on every line (bios can be multi-line)
+            bio = discord.utils.escape_markdown(message).replace("\n", "\n> ")
+            head += f"\n> {bio}"
         container.add_item(discord.ui.TextDisplay(head))
 
         # equipped titles (badges) as one small strip (a full-width media item per badge is huge)
