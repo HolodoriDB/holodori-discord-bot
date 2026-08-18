@@ -88,28 +88,38 @@ class ProfileCog(commands.Cog):
     ) -> None:
         assert self.bot.holo and self.bot.user_data
         await interaction.response.defer(thinking=True)
-        await self.bot.holo.ensure_asset_info()  # need the public cdn base for the badge/palette urls
         region = await self._region(interaction.user.id, region)
         pid = id.strip().upper()
         if not pid:
             await interaction.followup.send(embed=embeds.error_embed("Give a player ID to look up."))
             return
+        view, files, err = await self.build_profile(pid, region)
+        if err is not None or view is None:
+            await interaction.followup.send(embed=err or embeds.error_embed("Couldn't load that profile."))
+            return
+        await interaction.followup.send(view=view, files=files)
+
+    async def build_profile(
+        self, pid: str, region: str
+    ) -> tuple["discord.ui.LayoutView | None", list[discord.File], "discord.Embed | None"]:
+        # shared by /holodori profile and the %player "Profile" button: (view, files, None) or
+        # (None, [], error_embed). the caller sends it.
+        assert self.bot.holo
+        await self.bot.holo.ensure_asset_info()  # the public cdn base, for the badge/palette urls
         try:
             data = await self.bot.holo.get_profile(pid, region)
         except HolodoriNotFound:
-            await interaction.followup.send(
-                embed=embeds.error_embed(
-                    "Profile not found, or the player has it set to private."
-                )
+            # a "private" profile still fetches by id (private only hides the id in-game, which we
+            # don't show anyway) - an empty reply means the id itself doesn't exist
+            return None, [], embeds.error_embed(
+                f"No player found with the ID `{pid}` on {REGION_LABELS.get(region, region)}."
             )
-            return
         except HolodoriError as e:
-            await interaction.followup.send(
-                embed=embeds.error_embed(f"Couldn't fetch that profile: {e.detail or e.status}")
+            return None, [], embeds.error_embed(
+                f"Couldn't fetch that profile: {e.detail or e.status}"
             )
-            return
         view, files = await self._build_card(data, pid, region)
-        await interaction.followup.send(view=view, files=files)
+        return view, files, None
 
     async def _build_card(
         self, data: dict, pid: str, region: str

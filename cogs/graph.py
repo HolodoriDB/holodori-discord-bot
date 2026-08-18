@@ -604,6 +604,7 @@ class GraphCog(commands.Cog):
             name=str(player["name"]),
             points=player.get("points"),
             updated=player.get("updatedAt"),
+            public_id=player.get("userId"),
             restrict_to=restrict_to,
         )
 
@@ -828,12 +829,14 @@ class _PlayerCardView(HoloLayoutView):
         name: str,
         points: int | None,
         updated: int | None = None,
+        public_id: str | None = None,
         restrict_to: int,
     ) -> None:
         super().__init__(timeout=180, restrict_to=restrict_to)
         self.cog = cog
         self.region = region
         self.rank = rank
+        self.public_id = public_id
         label = REGION_LABELS.get(region, region)
         pts = f"{int(points):,} EP" if points is not None else "—"
         container = discord.ui.Container(
@@ -846,12 +849,15 @@ class _PlayerCardView(HoloLayoutView):
         if updated:
             stats += f"\n**Last Data Update:** <t:{int(updated) // 1000}:R>"
         container.add_item(discord.ui.TextDisplay(stats))
-        row = discord.ui.ActionRow()
-        for lbl, emo, cb in (
+        specs = [
             ("Graph", "📈", self._on_graph),
             ("Heatmap", "🔥", self._on_heatmap),
             ("Cutoff", "✂️", self._on_cutoff),
-        ):
+        ]
+        if public_id:  # the profile fetch keys on the public id, which we only have from the search
+            specs.append(("Profile", "👤", self._on_profile))
+        row = discord.ui.ActionRow()
+        for lbl, emo, cb in specs:
             btn = discord.ui.Button(label=lbl, emoji=emo, style=discord.ButtonStyle.primary)
             btn.callback = cb  # type: ignore[assignment]
             row.add_item(btn)
@@ -892,6 +898,20 @@ class _PlayerCardView(HoloLayoutView):
             user_id=interaction.user.id, region=self.region, tier=self.rank
         )
         await interaction.followup.send(embed=em)
+
+    async def _on_profile(self, interaction: discord.Interaction) -> None:
+        # the profile card lives in ProfileCog; delegate to it with this player's public id
+        await interaction.response.defer(thinking=True)
+        prof = self.cog.bot.get_cog("ProfileCog")
+        if prof is None:
+            await interaction.followup.send(embed=embeds.error_embed("Couldn't load that profile."))
+            return
+        assert self.public_id is not None  # the Profile button is only added when we have one
+        view, files, err = await prof.build_profile(self.public_id, self.region)  # type: ignore[attr-defined]
+        if err is not None or view is None:
+            await interaction.followup.send(embed=err or embeds.error_embed("Couldn't load that profile."))
+            return
+        await interaction.followup.send(view=view, files=files)
 
 
 class _PlayerPickView(HoloLayoutView):
