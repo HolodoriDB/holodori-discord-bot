@@ -160,6 +160,14 @@ class ProfileCog(commands.Cog):
             head += f"\n> {bio}"
         container.add_item(discord.ui.TextDisplay(head))
 
+        # our own detected affiliations - just their descriptions (bot always reads the "en" key).
+        # NOT escaped: these are our curated strings (the OSHI one carries a link we want clickable)
+        descs = [
+            d for a in (p.get("affiliations") or []) if (d := (a.get("description") or {}).get("en"))
+        ]
+        if descs:
+            container.add_item(discord.ui.TextDisplay("\n".join(f"-# {d}" for d in descs)))
+
         # equipped titles (badges) as one small strip (a full-width media item per badge is huge)
         strip = await self._badge_strip(p.get("emblems") or [])
         if strip:
