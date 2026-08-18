@@ -166,7 +166,7 @@ class ProfileCog(commands.Cog):
             d for a in (p.get("affiliations") or []) if (d := (a.get("description") or {}).get("en"))
         ]
         if descs:
-            container.add_item(discord.ui.TextDisplay("\n".join(f"-# {d}" for d in descs)))
+            container.add_item(discord.ui.TextDisplay("\n".join(f"- {d}" for d in descs)))
 
         # equipped titles (badges) as one small strip (a full-width media item per badge is huge)
         strip = await self._badge_strip(p.get("emblems") or [])
