@@ -1,14 +1,55 @@
 from __future__ import annotations
 
+import asyncio
 import io
 from typing import TYPE_CHECKING
 
+import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands
+from PIL import Image
+
+# the badge tray is 5 slots (S=1, M=2, L=3); a badge sits at a 1-indexed start slot and empty slots
+# are real gaps (e.g. MxMxx, SSSxx). we lay them on a fixed 5-slot canvas so positions/gaps are
+# faithful. _SLOT_W = 1.8*H so an L (3 slots) exactly matches the emblem art's 27/5 aspect. the whole
+# strip is ~9:1, so a single media item renders as a small band (not one huge image per badge).
+_BADGE_H = 96
+_SLOT_W = 173
+_N_SLOTS = 5
+
+
+def _slots(size: str | None) -> int:
+    s = str(size or "")
+    return 3 if s.endswith("_L") else 2 if s.endswith("_M") else 1
+
+
+def _compose_badge_strip(items: list[tuple[int, int, bytes]]) -> bytes | None:
+    # items: (start_slot 1-5, slot_span, image bytes). each badge is fit (aspect-preserving, centered)
+    # into its slot box; uncovered slots stay transparent.
+    canvas = Image.new("RGBA", (_SLOT_W * _N_SLOTS, _BADGE_H), (0, 0, 0, 0))
+    drew = False
+    for start, span, raw in items:
+        try:
+            im = Image.open(io.BytesIO(raw)).convert("RGBA")
+        except Exception:
+            continue
+        box_w = _SLOT_W * span
+        scale = min(box_w / im.width, _BADGE_H / im.height)
+        nw, nh = max(1, round(im.width * scale)), max(1, round(im.height * scale))
+        im = im.resize((nw, nh), Image.Resampling.LANCZOS)
+        x0 = _SLOT_W * (start - 1)  # slots are 1-indexed
+        canvas.paste(im, (x0 + (box_w - nw) // 2, (_BADGE_H - nh) // 2), im)
+        drew = True
+    if not drew:
+        return None
+    out = io.BytesIO()
+    canvas.save(out, "PNG")
+    return out.getvalue()
 
 from helpers import embeds
 from helpers.autocompletes import REGION_CHOICES, REGION_LABELS
+from helpers.emojis import emojis
 from services.holodori import HolodoriError, HolodoriNotFound
 
 if TYPE_CHECKING:
@@ -89,30 +130,24 @@ class ProfileCog(commands.Cog):
             )
             if x
         )
-        head = f"## {discord.utils.escape_markdown(name)}"
+        # the fan mark as a custom emoji right next to the name (holomem fan badge, or the official
+        # verified mark) - falls back to no emoji if it isn't uploaded
+        fan = p.get("fanMark") or {}
+        mark = emojis.fanmark(fan.get("assetId")) if fan.get("assetId") else None
+        head = f"## {f'{mark} ' if mark else ''}{discord.utils.escape_markdown(name)}"
         if sub:
             head += f"\n{sub}"  # normal size (not -#), so rank + region stand out
         message = str(info.get("message") or "").strip()
         if message:
             head += f"\n-# {discord.utils.escape_markdown(message)}"
-        header = discord.ui.TextDisplay(head)
+        container.add_item(discord.ui.TextDisplay(head))
 
-        fan = p.get("fanMark") or {}
-        fan_url = self.bot.holo.image_url(fan.get("image")) if fan.get("image") else None
-        if fan_url:
-            container.add_item(discord.ui.Section(header, accessory=discord.ui.Thumbnail(fan_url)))
-        else:
-            container.add_item(header)
-
-        # equipped titles (badges), one row of images
-        badges = [
-            u
-            for e in (p.get("emblems") or [])[:10]
-            if e.get("image") and (u := self.bot.holo.image_url(e["image"]))
-        ]
-        if badges:
+        # equipped titles (badges) as one small strip (a full-width media item per badge is huge)
+        strip = await self._badge_strip(p.get("emblems") or [])
+        if strip:
+            files.append(discord.File(io.BytesIO(strip), "badges.png"))
             container.add_item(
-                discord.ui.MediaGallery(*[discord.MediaGalleryItem(u) for u in badges])
+                discord.ui.MediaGallery(discord.MediaGalleryItem("attachment://badges.png"))
             )
 
         # the custom palette image underneath
@@ -123,6 +158,46 @@ class ProfileCog(commands.Cog):
         view = discord.ui.LayoutView(timeout=None)
         view.add_item(container)
         return view, files
+
+    def _badge_url(self, emblem: dict) -> str | None:
+        # badges span 5 slots (S=1, M=2, L=3), and the art's own aspect encodes that width - so
+        # compositing at a fixed height keeps SLS / ML / SSSSS etc. proportional. only the L emblems
+        # are stored squished-into-POT, so point those at their true-aspect _unsquished sibling.
+        img = emblem.get("image")
+        if not img:
+            return None
+        if str(emblem.get("size") or "").endswith("_L") or "img_emb_l_" in img:
+            return self.bot.holo.unsquished_image_url(img)
+        return self.bot.holo.image_url(img)
+
+    async def _badge_strip(self, emblems: list) -> bytes | None:
+        # fetch each equipped badge (public cdn) at its slot; composite onto the 5-slot tray
+        assert self.bot.holo
+        want: list[tuple[int, int, str]] = []  # (start_slot, span, url)
+        for e in emblems or []:
+            url = self._badge_url(e)
+            if not url:
+                continue
+            pos = e.get("position")
+            start = pos if isinstance(pos, int) and 1 <= pos <= _N_SLOTS else 1
+            want.append((start, _slots(e.get("size")), url))
+        if not want:
+            return None
+        items: list[tuple[int, int, bytes]] = []
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as s:
+                for start, span, url in want:
+                    try:
+                        async with s.get(url) as r:
+                            if r.status == 200:
+                                items.append((start, span, await r.read()))
+                    except aiohttp.ClientError:
+                        continue
+        except aiohttp.ClientError:
+            return None
+        if not items:
+            return None
+        return await asyncio.to_thread(_compose_badge_strip, items)
 
     async def _palette_item(
         self, palette: dict | None, pid: str, region: str, files: list[discord.File]

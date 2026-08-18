@@ -81,11 +81,11 @@ async def _main() -> None:
                     print(f"fanmark fetch skipped: {e}")
                 cdn = info.get("cdn") or base
                 hashes = info.get("hashes") or {}
-                for hm in rows:
-                    cid = hm.get("id")
-                    if not cid:
-                        continue
-                    num = cid.split("-")[-1]
+                # one per holomem, plus the official "verified" mark (fan_mark-official -> 99999,
+                # not a holomem so it isn't in /holomem/list)
+                nums = [cid.split("-")[-1] for hm in rows if (cid := hm.get("id"))]
+                nums.append("99999")
+                for num in nums:
                     name = f"chr_{num}_fanmark"
                     emoji = existing.get(name)
                     if emoji and not force:
