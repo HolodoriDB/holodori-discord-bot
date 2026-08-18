@@ -14,32 +14,37 @@ from PIL import Image
 # are real gaps (e.g. MxMxx, SSSxx). we lay them on a fixed 5-slot canvas so positions/gaps are
 # faithful. _SLOT_W = 1.8*H so an L (3 slots) exactly matches the emblem art's 27/5 aspect. the whole
 # strip is ~9:1, so a single media item renders as a small band (not one huge image per badge).
-_BADGE_H = 96
-_SLOT_W = 173
+# the equipped-title tray is 5 uniform 86.4px slots (432x86.4, from the UserEmblemView prefab: cell
+# pitch 86.4, no edge padding). each emblem is pivot-CENTERED over its slot span (S=1/M=2/L=3) at its
+# own cell size (S 86.4x86.4, M 169.56x79.79, L 224.64x69.12 - RectTransformSizeChange._values), so
+# M/L carry the game's own small in-span padding and empty slots stay clear. rendered 2x for crispness.
+_SCALE = 2
+_SLOT = 86.4 * _SCALE
 _N_SLOTS = 5
+_TRAY_H = round(86.4 * _SCALE)
+# emblem cell (width, height, slot span) per size
+_EMBLEM = {"S": (86.4, 86.4, 1), "M": (169.56, 79.79, 2), "L": (224.64, 69.12, 3)}
 
 
-def _slots(size: str | None) -> int:
+def _size_char(size: str | None) -> str:
     s = str(size or "")
-    return 3 if s.endswith("_L") else 2 if s.endswith("_M") else 1
+    return "L" if s.endswith("_L") else "M" if s.endswith("_M") else "S"
 
 
-def _compose_badge_strip(items: list[tuple[int, int, bytes]]) -> bytes | None:
-    # items: (start_slot 1-5, slot_span, image bytes). each badge is fit (aspect-preserving, centered)
-    # into its slot box; uncovered slots stay transparent.
-    canvas = Image.new("RGBA", (_SLOT_W * _N_SLOTS, _BADGE_H), (0, 0, 0, 0))
+def _compose_badge_strip(items: list[tuple[int, str, bytes]]) -> bytes | None:
+    # items: (start_slot 1-5, size 'S'/'M'/'L', image bytes); emblem is unsquished so its w:h already
+    # matches the cell, so resizing to the cell size keeps the aspect. centered over its slot span.
+    canvas = Image.new("RGBA", (round(_SLOT * _N_SLOTS), _TRAY_H), (0, 0, 0, 0))
     drew = False
-    for start, span, raw in items:
+    for start, size, raw in items:
+        w0, h0, span = _EMBLEM.get(size, _EMBLEM["S"])
+        w, h = round(w0 * _SCALE), round(h0 * _SCALE)
         try:
-            im = Image.open(io.BytesIO(raw)).convert("RGBA")
+            im = Image.open(io.BytesIO(raw)).convert("RGBA").resize((w, h), Image.Resampling.LANCZOS)
         except Exception:
             continue
-        box_w = _SLOT_W * span
-        scale = min(box_w / im.width, _BADGE_H / im.height)
-        nw, nh = max(1, round(im.width * scale)), max(1, round(im.height * scale))
-        im = im.resize((nw, nh), Image.Resampling.LANCZOS)
-        x0 = _SLOT_W * (start - 1)  # slots are 1-indexed
-        canvas.paste(im, (x0 + (box_w - nw) // 2, (_BADGE_H - nh) // 2), im)
+        x_center = ((start - 1) + span / 2) * _SLOT  # centre of the emblem's slot span
+        canvas.paste(im, (round(x_center - w / 2), round((_TRAY_H - h) / 2)), im)
         drew = True
     if not drew:
         return None
@@ -179,31 +184,33 @@ class ProfileCog(commands.Cog):
         img = emblem.get("image")
         if not img:
             return None
-        if str(emblem.get("size") or "").endswith("_L") or "img_emb_l_" in img:
+        size = str(emblem.get("size") or "")
+        # M and L emblems are stored squished-into-POT (extract._unsquish_aspect); S is 1:1 natural
+        if size.endswith(("_M", "_L")) or "img_emb_m_" in img or "img_emb_l_" in img:
             return self.bot.holo.unsquished_image_url(img)
         return self.bot.holo.image_url(img)
 
     async def _badge_strip(self, emblems: list) -> bytes | None:
         # fetch each equipped badge (public cdn) at its slot; composite onto the 5-slot tray
         assert self.bot.holo
-        want: list[tuple[int, int, str]] = []  # (start_slot, span, url)
+        want: list[tuple[int, str, str]] = []  # (start_slot, size 'S'/'M'/'L', url)
         for e in emblems or []:
             url = self._badge_url(e)
             if not url:
                 continue
             pos = e.get("position")
             start = pos if isinstance(pos, int) and 1 <= pos <= _N_SLOTS else 1
-            want.append((start, _slots(e.get("size")), url))
+            want.append((start, _size_char(e.get("size")), url))
         if not want:
             return None
-        items: list[tuple[int, int, bytes]] = []
+        items: list[tuple[int, str, bytes]] = []
         try:
             async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as s:
-                for start, span, url in want:
+                for start, size, url in want:
                     try:
                         async with s.get(url) as r:
                             if r.status == 200:
-                                items.append((start, span, await r.read()))
+                                items.append((start, size, await r.read()))
                     except aiohttp.ClientError:
                         continue
         except aiohttp.ClientError:
