@@ -24,3 +24,6 @@ numpy
 
 # Console colors
 colorama
+
+# Terminal display width (CJK + emoji grapheme widths for the aligned text leaderboard)
+wcwidth

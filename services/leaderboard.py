@@ -2,12 +2,15 @@
 
 Columns # (rank + coloured move tag: green up / red down), Name, Score, +/hr; the name column is
 squeezed so the WHOLE row (incl. separators) fits the target width, and every column pads by DISPLAY
-width (CJK = 2 cells). ansi escapes are zero-width so they must NOT count toward padding (see
-_rank_cell). Ported from RoboNene's generateRankingTextChanges
-(github.com/Ai0796/RoboNene). Known limitation: Discord renders CJK/Hangul at a non-2x width (and it
-differs desktop vs mobile), so a CJK name shifts whatever column follows it - true in inline `code`
-too, so it's NOT an inline-vs-block thing. The only reliable text fix is to make the name the LAST
-column so nothing follows it.
+width, computed per GRAPHEME via wcwidth: CJK/Hangul/fullwidth = 2 cells, and a multi-codepoint emoji
+(a ZWJ sequence, a flag, a keycap, a skin-toned face) counts as ONE 2-cell glyph instead of several
+(counting those by code point overcounts them badly - e.g. a family emoji was 8 - and shoved the
+score/+ columns right). ansi escapes are zero-width so they must NOT count toward padding (see
+_rank_cell). Ported from RoboNene's generateRankingTextChanges (github.com/Ai0796/RoboNene). Known
+limitation: Discord renders CJK/Hangul at a non-2x width (and it differs desktop vs mobile), so a CJK
+name still shifts whatever column follows it a little - true in inline `code` too, so it's NOT an
+inline-vs-block thing. The only fully reliable text fix for CJK is to make the name the LAST column so
+nothing follows it; emoji, by contrast, ARE now accounted for exactly.
 """
 
 from __future__ import annotations
@@ -16,31 +19,97 @@ import re
 import unicodedata
 from dataclasses import dataclass
 
+from wcwidth import wcswidth
+
 DESKTOP_MAX = 42  # target row width (cells); the name column shrinks to fit it
 MOBILE_MAX = 30
 
 _CLEAN = re.compile(r"[\n\t\r]")
 
 
-def _cw(ch: str) -> int:
-    # display cells: CJK/Hangul/fullwidth render 2-wide in Discord's monospace, everything else 1.
-    # padding by len() instead of this is what let a name like "하젤" shove the later columns right.
-    return 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+_RI_LO, _RI_HI = 0x1F1E6, 0x1F1FF  # regional indicators (flag emoji come in pairs)
+_SKIN_LO, _SKIN_HI = 0x1F3FB, 0x1F3FF  # emoji skin-tone modifiers
+
+
+def _is_regional(ch: str) -> bool:
+    return _RI_LO <= ord(ch) <= _RI_HI
+
+
+def _is_extend(ch: str) -> bool:
+    # a char that shapes ONTO the previous one and adds no width of its own: a combining mark, a
+    # variation selector, the keycap combiner, or an emoji skin-tone modifier
+    o = ord(ch)
+    return (
+        unicodedata.category(ch) in ("Mn", "Mc", "Me")
+        or 0xFE00 <= o <= 0xFE0F
+        or 0xE0100 <= o <= 0xE01EF
+        or o == 0x20E3
+        or _SKIN_LO <= o <= _SKIN_HI
+    )
+
+
+def _graphemes(s: str) -> list[str]:
+    # split into grapheme clusters (approx, tuned for the emoji cases that break alignment): a base
+    # plus its combining marks / variation selectors, ZWJ-joined emoji, and flag (regional-indicator)
+    # pairs - so a multi-codepoint emoji counts as ONE glyph, not several.
+    out: list[str] = []
+    i, n = 0, len(s)
+    while i < n:
+        ch = s[i]
+        i += 1
+        if _is_regional(ch):  # a flag is two regional indicators
+            if i < n and _is_regional(s[i]):
+                ch += s[i]
+                i += 1
+            out.append(ch)
+            continue
+        while i < n:
+            nxt = s[i]
+            if nxt == "\u200d":  # ZWJ: absorb it and the emoji it joins to
+                ch += nxt + (s[i + 1] if i + 1 < n else "")
+                i += 2
+                continue
+            if _is_extend(nxt):
+                ch += nxt
+                i += 1
+                continue
+            break
+        out.append(ch)
+    return out
+
+
+def _cw(cluster: str) -> int:
+    # display cells for one grapheme: wcswidth knows CJK/Hangul/fullwidth (2), zero-width combining
+    # marks + variation selectors (0), and flags / keycaps / ZWJ emoji sequences (2, as one glyph) -
+    # counting those by code point is what let an emoji or a name like "하젤" shove later columns right.
+    # wcswidth returns -1 on a control char, so fall back to an east-asian estimate (controls as 0).
+    w = wcswidth(cluster)
+    if w >= 0:
+        return w
+    return sum(
+        0
+        if unicodedata.category(c)[0] == "C"
+        else 2
+        if unicodedata.east_asian_width(c) in ("W", "F")
+        else 1
+        for c in cluster
+    )
 
 
 def _width(s: str) -> int:
-    return sum(_cw(c) for c in s)
+    return sum(_cw(g) for g in _graphemes(s))
 
 
 def _fit(s: str, w: int) -> str:
-    # left-align s in exactly w display cells: cut on a cell boundary, then pad with spaces
+    # left-align s in exactly w display cells: take whole graphemes until the next would overflow (so
+    # an emoji is never split mid-glyph), then pad with spaces
     used = 0
     out: list[str] = []
-    for ch in s:
-        c = _cw(ch)
+    for g in _graphemes(s):
+        c = _cw(g)
         if used + c > w:
             break
-        out.append(ch)
+        out.append(g)
         used += c
     return "".join(out) + " " * (w - used)
 
