@@ -85,9 +85,15 @@ def _graphemes(s: str) -> list[str]:
 # width and pad the leftover with THREE-PER-EM spaces (~1/3 cell). TUNABLE - the real ratio differs by
 # client (desktop vs mobile), so tweak _CJK_WIDTH against a screenshot; U+2004 only helps if the client
 # actually draws it fractionally (if it snaps every space to a full cell, the honest fix is name-last).
-_CJK_WIDTH = 1.66
-_THIRD = "\u2004"  # THREE-PER-EM SPACE (~1/3 EN cell)
-_THIRD_W = 1 / 3
+# 3 CJK chars = exactly 5 EN cells in Discord's code font (a CJK glyph is 1 em, a Latin cell ~0.6 em,
+# so CJK = 5/3 cells) - which is why whole-EN-space padding is already spot-on at 3 / 6 / 9 CJK chars.
+_CJK_WIDTH = 5 / 3
+# the leftover at other counts is 1/3 or 2/3 of a cell, padded with this glyph, which must render at
+# EXACTLY 1/3 of a Latin cell. U+2004 (1/3 EM) came out a touch too WIDE (a slight overshoot at +1/3,
+# doubled at +2/3). TUNING LADDER, widest -> narrowest, swap this one line if it over/undershoots:
+#   U+2004 (1/3 em) . U+2005 (1/4 em) . U+2009 (thin) . U+2006 (1/6 em) . U+200A (hair)
+_THIRD = "\u2005"  # FOUR-PER-EM SPACE
+_THIRD_W = 1 / 3  # we always quantise the pad to 1/3-cell units; _THIRD must BE that 1/3 cell
 
 
 def _is_cjk_letter(cluster: str) -> bool:
