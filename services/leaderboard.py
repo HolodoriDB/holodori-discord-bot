@@ -80,20 +80,20 @@ def _graphemes(s: str) -> list[str]:
     return out
 
 
-# Discord's code-block font renders a CJK/Kana/Hangul char at ~1.66 EN cells, NOT 2 - counting it as 2
-# left CJK names ~1/3 cell/char too narrow (the more CJK, the shorter). we count the true fractional
-# width and pad the leftover with THREE-PER-EM spaces (~1/3 cell). TUNABLE - the real ratio differs by
-# client (desktop vs mobile), so tweak _CJK_WIDTH against a screenshot; U+2004 only helps if the client
-# actually draws it fractionally (if it snaps every space to a full cell, the honest fix is name-last).
-# 3 CJK chars = exactly 5 EN cells in Discord's code font (a CJK glyph is 1 em, a Latin cell ~0.6 em,
-# so CJK = 5/3 cells) - which is why whole-EN-space padding is already spot-on at 3 / 6 / 9 CJK chars.
-_CJK_WIDTH = 5 / 3
+# A CJK/Kana/Hangul char renders ~1.66 EN cells in Discord's code font (NOT 2), so counting it as 2 left
+# CJK names too narrow (the more CJK, the shorter). We count the true fractional width and pad the
+# leftover with a fractional-width space. EMPIRICALLY TUNED against screenshots: 1.66 lands the 3/6/9-
+# char cases dead-on (they pad with ZERO fractional glyphs, so they're the ground truth); 5/3 measured a
+# hair too wide and pushed them slightly under. Nudge _CJK_WIDTH if the multiples of 3 ever drift.
+_CJK_WIDTH = 1.66
 # the leftover at other counts is 1/3 or 2/3 of a cell, padded with this glyph, which must render at
-# EXACTLY 1/3 of a Latin cell. U+2004 (1/3 EM) came out a touch too WIDE (a slight overshoot at +1/3,
-# doubled at +2/3). TUNING LADDER, widest -> narrowest, swap this one line if it over/undershoots:
+# EXACTLY 1/3 of a Latin cell. U+2004 (1/3 EM) was a touch too WIDE; U+2005 (1/4 EM) is very close.
+# TUNING LADDER, widest -> narrowest, swap this one line if the +1/3 and +2/3 cases over/undershoot:
 #   U+2004 (1/3 em) . U+2005 (1/4 em) . U+2009 (thin) . U+2006 (1/6 em) . U+200A (hair)
 _THIRD = "\u2005"  # FOUR-PER-EM SPACE
 _THIRD_W = 1 / 3  # we always quantise the pad to 1/3-cell units; _THIRD must BE that 1/3 cell
+# NOTE: even a perfect tune here holds for ONE client - Discord's CJK/space widths differ desktop vs
+# mobile, so if the two can't be reconciled the only client-independent fix is Name as the LAST column.
 
 
 def _is_cjk_letter(cluster: str) -> bool:
