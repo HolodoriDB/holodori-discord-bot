@@ -496,15 +496,23 @@ class GraphCog(commands.Cog):
         await interaction.followup.send(embed=em)
 
     async def _cutoff_text_embed(
-        self, *, user_id: int, region: str, tier: int, event: str | None = None
+        self,
+        *,
+        user_id: int,
+        region: str,
+        tier: int,
+        event: str | None = None,
+        chapter: str | None = None,
     ) -> discord.Embed:
         # the shared body of `/cutoff` and `%cutoff`: a text stats + prediction card (no view).
-        # returns an error embed (same wording as the slash command) on a bad tier / no data.
+        # returns an error embed (same wording as the slash command) on a bad tier / no data. an
+        # explicit `chapter` pins it (used by a %player card on a past chapter); else it defaults.
         assert self.bot.holo and self.bot.user_data
         region = await self._region(user_id, region)
         ev = await self._resolve_event(region, event)
         # default to the chapter live right now (else the latest)
-        chapter = (ev.activeChapterId or (ev.chapters[-1] if ev.chapters else None)) if ev else None
+        if chapter is None:
+            chapter = (ev.activeChapterId or (ev.chapters[-1] if ev.chapters else None)) if ev else None
         try:
             data = await self.bot.holo.get_event_graph(
                 region, tier, event_id=event, chapter_id=chapter
@@ -666,6 +674,7 @@ class GraphCog(commands.Cog):
             updated=result.get("updatedAt") or s.get("updatedAt"),
             public_id=uid,
             history=bool(result.get("history")),
+            ended=bool(result.get("ended")),
             gain_stats=gain_stats,
             event_id=result.get("eventId"),
             ev=ev,
@@ -1039,6 +1048,7 @@ class _PlayerCardView(_ResearchView):
         updated: int | None = None,
         public_id: str | None = None,
         history: bool = False,
+        ended: bool = False,
         gain_stats: dict | None = None,
         event_id: str | None = None,
         ev: "EventInfo | None" = None,
@@ -1061,12 +1071,17 @@ class _PlayerCardView(_ResearchView):
         container.add_item(
             discord.ui.TextDisplay(f"## {discord.utils.escape_markdown(name)} - {label}")
         )
-        # a history player dropped off the board, so `rank` is their former BEST rank, not a live one;
-        # None means they never reached the top 100 in the chapter being shown
+        # rank meaning: a dropped-off player left the board before the chapter ended, so `rank` is the
+        # best they reached; otherwise it's their standing on the reference board - their live rank on
+        # the current chapter, or their FINAL rank on a finished one.
         if rank is None:
             rank_line = "Not in the top 100 this chapter"
+        elif history:
+            rank_line = f"No longer in T100, reached T{rank}"
+        elif ended:
+            rank_line = f"Final rank {rank}"
         else:
-            rank_line = f"Former highest T{rank}" if history else f"Currently rank {rank}"
+            rank_line = f"Currently rank {rank}"
         stats = f"## Player Statistics\n**Points:** {pts}\n{rank_line}"
         if updated:
             stats += f"\n**Last Data Update:** <t:{int(updated) // 1000}:R>"
@@ -1141,7 +1156,11 @@ class _PlayerCardView(_ResearchView):
     async def _on_cutoff(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(thinking=True)
         em = await self.cog._cutoff_text_embed(
-            user_id=interaction.user.id, region=self.region, tier=self.rank or 0
+            user_id=interaction.user.id,
+            region=self.region,
+            tier=self.rank or 0,
+            event=self.event_id,
+            chapter=self.chapter,
         )
         await interaction.followup.send(embed=em)
 
@@ -1193,9 +1212,9 @@ class _PlayerPickView(_ResearchView):
                 description=(
                     f"{REGION_LABELS.get(c['region'], c['region'])} · "
                     + (
-                        f"Former highest T{c['rank']}"
+                        f"No longer in T100, reached T{c['rank']}"
                         if c.get("history")
-                        else f"Rank {c['rank']}"
+                        else (f"Final rank {c['rank']}" if c.get("ended") else f"Rank {c['rank']}")
                         + (f" · {int(c['points']):,} EP" if c.get("points") is not None else "")
                     )
                 )[:100],
