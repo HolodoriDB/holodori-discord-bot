@@ -865,7 +865,10 @@ def _format_gains(g: dict) -> str | None:
     last = g.get("lastGain")
     if last is None:
         return None
-    lines = ["**Gains**"]
+    lines = ["## Gains"]
+    total = g.get("gainCount")
+    if total is not None:
+        lines.append(f"**Total Gains:** {int(total):,}")  # every gain this chapter, spacing aside
     line = f"**Last Gain Amount:** +{int(last):,} EP"
     if g.get("lastGainAt"):
         line += f" (<t:{int(g['lastGainAt']) // 1000}:R>)"
@@ -916,7 +919,7 @@ class _PlayerCardView(HoloLayoutView):
         )
         # a history player dropped off the board, so `rank` is their former BEST rank, not a live one
         rank_line = f"Former highest T{rank}" if history else f"Currently rank {rank}"
-        stats = f"**Player Statistics**\n**Points:** {pts}\n{rank_line}"
+        stats = f"## Player Statistics\n**Points:** {pts}\n{rank_line}"
         if updated:
             stats += f"\n**Last Data Update:** <t:{int(updated) // 1000}:R>"
         container.add_item(discord.ui.TextDisplay(stats))
