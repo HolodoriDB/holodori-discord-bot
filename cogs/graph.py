@@ -11,7 +11,7 @@ from discord.ext import commands
 
 from helpers import embeds, text_commands, timezones
 from helpers.autocompletes import REGION_CHOICES, REGION_LABELS, autocompletes
-from helpers.chapter_buttons import ChapterButtons, chapters_from_event
+from helpers.chapter_buttons import ChapterButtons, chapters_from_event, fanmark_emoji
 from helpers.views import HoloLayoutView, HoloView
 from services.graph import render_graph as _render_graph_img
 from services.graph import render_heatmap as _render_heatmap_img
@@ -165,17 +165,20 @@ class GraphCog(commands.Cog):
         timezone: str | None = None,
         player_id: str | None = None,
         player_only: bool = False,
+        chapter: str | None = None,
     ) -> tuple[discord.Embed, list[discord.File], _GraphView | None]:
         # the shared body of `/graph cutoff` and `%graph`: resolve, render, and build the interactive
         # view (or None when there's nothing to interact with). the caller sends it. player_id (with
         # player_only) follows one specific player by id across chapters instead of a tier's cutoff.
+        # an explicit `chapter` pins the view to it (used by %player's chapter switch); else it defaults.
         assert self.bot.holo and self.bot.user_data and self.bot.data
         region = await self._region(user_id, region)
         tz_name = timezone or await self.bot.user_data.get_settings(user_id, "timezone")
         tz = timezones.resolve(tz_name)
         ev = await self._resolve_event(region, event)
         # default to the chapter live right now (else the latest)
-        chapter = (ev.activeChapterId or (ev.chapters[-1] if ev.chapters else None)) if ev else None
+        if chapter is None:
+            chapter = (ev.activeChapterId or (ev.chapters[-1] if ev.chapters else None)) if ev else None
         music = mode == "song"
 
         songs: list[tuple[str, str]] = []  # (music_id, title)
@@ -293,16 +296,19 @@ class GraphCog(commands.Cog):
         timezone: str | None = None,
         player_id: str | None = None,
         metric: str = "gph",
+        chapter: str | None = None,
     ) -> tuple[discord.Embed, list[discord.File], _HeatmapView | None]:
         # the shared body of `/heatmap` and `%heatmap` (metric toggle + chapter-switch view). the caller
         # sends. player_id follows one specific player by id (e.g. a dropped-off one) across chapters.
+        # an explicit `chapter` pins it (used by %player's chapter switch); else it defaults.
         assert self.bot.holo and self.bot.user_data and self.bot.data
         region = await self._region(user_id, region)
         tz_name = timezone or await self.bot.user_data.get_settings(user_id, "timezone")
         tz = timezones.resolve(tz_name)
         ev = await self._resolve_event(region, event)
         # default to the chapter live right now (else the latest)
-        chapter = (ev.activeChapterId or (ev.chapters[-1] if ev.chapters else None)) if ev else None
+        if chapter is None:
+            chapter = (ev.activeChapterId or (ev.chapters[-1] if ev.chapters else None)) if ev else None
         player_mode = (tier <= 100) if by_tier is None else (not by_tier)
 
         embed, files = await self.render_heatmap(
@@ -626,27 +632,72 @@ class GraphCog(commands.Cog):
         if view is not None:
             view.message = msg
 
-    async def _player_card_view(self, player: dict, *, restrict_to: int) -> "_PlayerCardView":
-        # a components-v2 card: the {Name} - {region} heading, the Points stat, and the Graph /
-        # Heatmap / Cutoff buttons all live INSIDE one accent Container (buttons inside the "embed").
-        # one small fetch adds the per-minute EP gain summary; any failure just omits those lines.
-        gain_stats: dict | None = None
-        uid = player.get("userId")
+    async def _build_player_card(
+        self,
+        orig: dict,
+        *,
+        chapter: str | None,
+        ev: "EventInfo | None",
+        active_chapter: str | None,
+        restrict_to: int,
+    ) -> "_PlayerCardView":
+        # a components-v2 card for ONE chapter of this player: the {Name} - {region} heading, the
+        # Points stat + gains, and the Graph / Heatmap / Cutoff buttons all live INSIDE one accent
+        # Container. the live/active chapter keeps the search's standing (Currently rank / Former
+        # highest, off the live board); any past chapter is rebuilt from that chapter's archive by the
+        # player's id (always historical there, and "no top-100 this chapter" when they never made it).
+        region = orig["region"]
+        uid = str(orig["userId"]) if orig.get("userId") else None
+        gain_stats: dict | None = None  # one small fetch adds the per-minute EP gain summary
         if uid and self.bot.holo:
             try:
-                gain_stats = await self.bot.holo.get_player_stats(player["region"], str(uid))
+                gain_stats = await self.bot.holo.get_player_stats(region, uid, chapter_id=chapter)
             except HolodoriError:
                 gain_stats = None
+        if chapter is None or chapter == active_chapter:
+            rank = orig.get("rank")  # for a history player this is already their FORMER highest
+            name = str(orig["name"])
+            points = orig.get("points")
+            updated = orig.get("updatedAt")
+            history = bool(orig.get("history"))
+        else:
+            s = gain_stats or {}
+            rank = s.get("rank")  # best rank that chapter; None if they never made top-100 then
+            name = s.get("name") or str(orig["name"])
+            points = s.get("points")
+            updated = s.get("updatedAt")
+            history = True
         return _PlayerCardView(
             self,
-            region=player["region"],
-            rank=int(player["rank"]),  # for a history player this is already their FORMER highest
-            name=str(player["name"]),
-            points=player.get("points"),
-            updated=player.get("updatedAt"),
-            public_id=player.get("userId"),
-            history=bool(player.get("history")),
+            region=region,
+            rank=int(rank) if rank is not None else None,
+            name=name,
+            points=points,
+            updated=updated,
+            public_id=uid,
+            history=history,
             gain_stats=gain_stats,
+            ev=ev,
+            chapter=chapter,
+            active_chapter=active_chapter,
+            orig=orig,
+            restrict_to=restrict_to,
+        )
+
+    async def _player_card_view(self, player: dict, *, restrict_to: int) -> "_PlayerCardView":
+        # the entry point: resolve the event's chapters, then build the card on the chapter the search
+        # matched in. that chapter is the "origin" - its live standing lives in `player` (search), so
+        # the card uses that here and rebuilds any OTHER chapter from its archive. the card's chapter
+        # buttons switch from there. the card opens on the origin chapter.
+        ev = await self._resolve_event(player["region"], player.get("eventId"))
+        origin_chapter = player.get("chapterId") or (
+            (ev.activeChapterId or (ev.chapters[-1] if ev.chapters else None)) if ev else None
+        )
+        return await self._build_player_card(
+            player,
+            chapter=origin_chapter,
+            ev=ev,
+            active_chapter=origin_chapter,
             restrict_to=restrict_to,
         )
 
@@ -923,13 +974,17 @@ class _PlayerCardView(HoloLayoutView):
         cog: GraphCog,
         *,
         region: str,
-        rank: int,
+        rank: int | None,
         name: str,
         points: int | None,
         updated: int | None = None,
         public_id: str | None = None,
         history: bool = False,
         gain_stats: dict | None = None,
+        ev: "EventInfo | None" = None,
+        chapter: str | None = None,
+        active_chapter: str | None = None,
+        orig: dict | None = None,
         restrict_to: int,
     ) -> None:
         super().__init__(timeout=180, restrict_to=restrict_to)
@@ -938,6 +993,13 @@ class _PlayerCardView(HoloLayoutView):
         self.rank = rank
         self.public_id = public_id
         self.history = history
+        # state the chapter buttons need to rebuild this card for another chapter
+        self.ev = ev
+        self.chapter = chapter
+        self.active_chapter = active_chapter
+        self.orig = orig or {}
+        self.event_id = self.orig.get("eventId")
+        has_data = rank is not None  # no top-100 standing this chapter -> nothing to graph/heatmap
         label = REGION_LABELS.get(region, region)
         pts = f"{int(points):,} EP" if points is not None else "—"
         container = discord.ui.Container(
@@ -946,8 +1008,12 @@ class _PlayerCardView(HoloLayoutView):
         container.add_item(
             discord.ui.TextDisplay(f"## {discord.utils.escape_markdown(name)} - {label}")
         )
-        # a history player dropped off the board, so `rank` is their former BEST rank, not a live one
-        rank_line = f"Former highest T{rank}" if history else f"Currently rank {rank}"
+        # a history player dropped off the board, so `rank` is their former BEST rank, not a live one;
+        # None means they never reached the top 100 in the chapter being shown
+        if rank is None:
+            rank_line = "Not in the top 100 this chapter"
+        else:
+            rank_line = f"Former highest T{rank}" if history else f"Currently rank {rank}"
         stats = f"## Player Statistics\n**Points:** {pts}\n{rank_line}"
         if updated:
             stats += f"\n**Last Data Update:** <t:{int(updated) // 1000}:R>"
@@ -961,10 +1027,10 @@ class _PlayerCardView(HoloLayoutView):
         # graph/heatmap follow them by their id instead (needs public_id). Cutoff is a tier's line,
         # not a player's, so it's current-players-only.
         specs: list[tuple[str, str, object]] = []
-        if not history or public_id:
+        if has_data and (not history or public_id):
             specs.append(("Graph", "📈", self._on_graph))
             specs.append(("Heatmap", "🔥", self._on_heatmap))
-        if not history:
+        if has_data and not history:
             specs.append(("Cutoff", "✂️", self._on_cutoff))
         if public_id:  # the profile fetch keys on the public id, only known from the search
             specs.append(("Profile", "👤", self._on_profile))
@@ -976,6 +1042,48 @@ class _PlayerCardView(HoloLayoutView):
                 row.add_item(btn)
             container.add_item(row)
         self.add_item(container)
+        # chapter buttons UNDER the card (relay events with >1 chapter only): each re-scopes the whole
+        # card - stats, gains, and the graph/heatmap it opens - to that chapter's data for this player
+        chapters = chapters_from_event(ev)
+        if len(chapters) > 1:
+            self._add_chapter_rows(chapters)
+
+    def _add_chapter_rows(self, chapters: list) -> None:
+        row = discord.ui.ActionRow()
+        for i, (cid, clabel, started, char_id) in enumerate(chapters[:20]):
+            if i and i % 5 == 0:  # 5 buttons per row
+                self.add_item(row)
+                row = discord.ui.ActionRow()
+            btn = discord.ui.Button(label=(clabel or "?")[:80], emoji=fanmark_emoji(char_id))
+            if cid == self.chapter:
+                btn.style, btn.disabled = discord.ButtonStyle.success, True  # the one shown now
+            elif not started:
+                btn.style, btn.disabled = discord.ButtonStyle.secondary, True  # not started yet
+            else:
+                btn.style = discord.ButtonStyle.primary  # jump to it
+
+            async def cb(interaction: discord.Interaction, cid: str = cid) -> None:
+                await self._on_chapter(interaction, cid)
+
+            btn.callback = cb  # type: ignore[method-assign]
+            row.add_item(btn)
+        self.add_item(row)
+
+    async def _on_chapter(self, interaction: discord.Interaction, chapter_id: str) -> None:
+        if chapter_id == self.chapter:
+            await interaction.response.defer()
+            return
+        await interaction.response.defer()  # deferred UPDATE; the rebuild edits this same message
+        card = await self.cog._build_player_card(
+            self.orig,
+            chapter=chapter_id,
+            ev=self.ev,
+            active_chapter=self.active_chapter,
+            restrict_to=self.restrict_to or 0,
+        )
+        await interaction.edit_original_response(view=card)
+        card.message = interaction.message
+        self.stop()  # the new card owns the message now; don't let this one's timeout clobber it
 
     async def _send(
         self,
@@ -993,11 +1101,14 @@ class _PlayerCardView(HoloLayoutView):
 
     async def _on_graph(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(thinking=True)
-        # a history player is followed by id (player-only, no cutoff line); a current one by rank
+        # a history player is followed by id (player-only, no cutoff line); a current one by rank.
+        # pin to the chapter the card is showing (the buttons may have switched it off the live one)
         embed, files, view = await self.cog._graph_payload(
             user_id=interaction.user.id,
             region=self.region,
-            tier=self.rank,
+            tier=self.rank or 0,
+            event=self.event_id,
+            chapter=self.chapter,
             player_id=self.public_id if self.history else None,
             player_only=self.history,
         )
@@ -1008,7 +1119,9 @@ class _PlayerCardView(HoloLayoutView):
         embed, files, view = await self.cog._heatmap_payload(
             user_id=interaction.user.id,
             region=self.region,
-            tier=self.rank,
+            tier=self.rank or 0,
+            event=self.event_id,
+            chapter=self.chapter,
             player_id=self.public_id if self.history else None,
         )
         await self._send(interaction, embed, files, view)
@@ -1016,7 +1129,7 @@ class _PlayerCardView(HoloLayoutView):
     async def _on_cutoff(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(thinking=True)
         em = await self.cog._cutoff_text_embed(
-            user_id=interaction.user.id, region=self.region, tier=self.rank
+            user_id=interaction.user.id, region=self.region, tier=self.rank or 0
         )
         await interaction.followup.send(embed=em)
 
