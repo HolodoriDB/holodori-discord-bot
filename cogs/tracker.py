@@ -10,6 +10,7 @@ from discord.ext import commands, tasks
 from helpers import embeds
 from helpers.autocompletes import REGION_CHOICES, REGION_LABELS
 from services.holodori import HolodoriError
+from helpers.lb_view import ranking_ends_line
 from services.leaderboard import LBRow, format_leaderboard
 
 if TYPE_CHECKING:
@@ -74,6 +75,9 @@ class TrackerCog(commands.Cog):
         updated = data.get("lastMinute")
         if isinstance(updated, (int, float)):
             parts.append(f"Top {_TOP}, updated <t:{int(updated) // 1000}:R>")
+        ends = ranking_ends_line(data.get("chapterEndTime"))
+        if ends:
+            parts.append(ends)
         parts.append(format_leaderboard(_t20_rows(rankings)))
         embed.description = "\n".join(parts)
         logo = self.bot.holo.unsquished_image_url(data.get("logo")) if self.bot.holo else None

@@ -163,11 +163,10 @@ class EventsCog(commands.Cog):
         ev = next((e for e in await self._events(region, user_id) if e.eventId == eid), None)
         chapters = chapters_from_event(ev)
 
-        async def fetch(cid: str) -> list[dict]:
-            d = await self.bot.holo.get_event_leaderboard(  # type: ignore[union-attr]
+        async def fetch(cid: str) -> dict:
+            return await self.bot.holo.get_event_leaderboard(  # type: ignore[union-attr]
                 region, event_id=eid, chapter_id=cid, language=lang
             )
-            return d.get("rankings", [])
 
         title = f"{data.get('eventName', 'Event')} - Top 100"
         logo = self.bot.holo.unsquished_image_url(data.get("logo"))
@@ -179,6 +178,7 @@ class EventsCog(commands.Cog):
             chapters=chapters,
             current_chapter=current_chapter,
             fetch=fetch,
+            ends_at=data.get("chapterEndTime"),
         )
         return view, None
 

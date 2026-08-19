@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import time
 from typing import Awaitable, Callable
 
 import discord
@@ -13,7 +14,19 @@ from services.leaderboard import LBRow, format_leaderboard
 PER_PAGE = 20
 _MAX_CHAPTER_ROWS = 4  # leave one row (of the 5) for the page controls
 
-Fetch = Callable[[str], Awaitable[list[dict]]]
+# the chapter switch fetch returns the whole leaderboard payload (rankings + chapterEndTime, so the
+# countdown can move with the viewed chapter)
+Fetch = Callable[[str], Awaitable[dict]]
+
+
+def ranking_ends_line(ends_at: int | None) -> str | None:
+    """"Ranking ends in ..." (future) / "Ranking ended ..." (past) for an event board's chapter end,
+    or None when there's no end to show. <t:...:R> supplies the "in"/"ago", so the verb has neither."""
+    if not ends_at:
+        return None
+    secs = int(ends_at) // 1000
+    verb = "ends" if int(ends_at) > time.time() * 1000 else "ended"
+    return f"Ranking {verb} <t:{secs}:R>"
 
 
 def _to_row(r: dict) -> LBRow:
@@ -46,11 +59,13 @@ class LeaderboardView(HoloView):
         chapters: list[Chapter] | None = None,
         current_chapter: str | None = None,
         fetch: Fetch | None = None,
+        ends_at: int | None = None,
     ) -> None:
         super().__init__(timeout=180, restrict_to=restrict_to)
         self.entries = [_to_row(r) for r in rows]
         self.title = title
         self.thumb = thumb
+        self.ends_at = ends_at  # this chapter's end, for the "ranking ends in ..." line
         self.per_page = per_page
         self.page = 0
         self.mobile = False
@@ -113,8 +128,9 @@ class LeaderboardView(HoloView):
             await interaction.response.defer()
             return
         await interaction.response.defer()
-        rows = await self._fetch(cid)
-        self.entries = [_to_row(r) for r in rows]
+        data = await self._fetch(cid)
+        self.ends_at = data.get("chapterEndTime")
+        self.entries = [_to_row(r) for r in data.get("rankings", [])]
         self.total_pages = max(1, math.ceil(len(self.entries) / self.per_page))
         self.page = 0
         self.offset = False
@@ -151,10 +167,15 @@ class LeaderboardView(HoloView):
         if label:
             title = f"{title} ({label})"
         embed = embeds.embed(title=title)
+        parts: list[str] = []
+        ends = ranking_ends_line(self.ends_at)
+        if ends:
+            parts.append(ends)
         if self.entries:
-            embed.description = format_leaderboard(self._window(), mobile=self.mobile)
+            parts.append(format_leaderboard(self._window(), mobile=self.mobile))
         else:
-            embed.description = "No ranking data for this chapter yet."
+            parts.append("No ranking data for this chapter yet.")
+        embed.description = "\n".join(parts)
         if self.thumb:
             embed.set_thumbnail(url=self.thumb)
         embed.set_footer(text=f"Page {self.page + 1}/{self.total_pages}")
