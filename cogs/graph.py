@@ -74,6 +74,8 @@ class GraphCog(commands.Cog):
         tz: tzinfo,
         ev: EventInfo | None,
         predict: bool = False,
+        player_id: str | None = None,
+        player_only: bool = False,
     ) -> tuple[discord.Embed, list[discord.File]]:
         assert self.bot.holo
         try:
@@ -85,6 +87,7 @@ class GraphCog(commands.Cog):
                 border=border or None,
                 music=music or None,
                 music_id=music_id,
+                user_id=player_id,
             )
         except HolodoriError as e:
             # 400s are our own validation (bad region/tier), whose detail is a ready-to-show
@@ -96,12 +99,16 @@ class GraphCog(commands.Cog):
         user_series = data.get("user") or []
         label = "Song Scores" if music else "Cutoff"
         lines: list[tuple[str, list, tuple[int, int, int, int]]] = []
-        if tier_series:
+        # player-only (a tracked history player): just their line, no tier cutoff to compare against
+        if tier_series and not player_only:
             lines.append((f"Tier {tier} {label}", tier_series, _TIER))
         if user_series:
             lines.append((str(data.get("name") or f"#{tier}"), user_series, _USER))
         if not lines:
-            return embeds.error_embed("No graph data for that event/tier yet."), []
+            return embeds.error_embed(
+                "No data for that player this chapter yet." if player_only
+                else "No graph data for that event/tier yet."
+            ), []
         prediction = data.get("prediction")
         predict_note: str | None = None
         if predict and not prediction:
@@ -113,7 +120,11 @@ class GraphCog(commands.Cog):
                 else "Not enough data yet to project a final (needs ~5% of the event)."
             )
         suffix = f" - {song_title}" if music and song_title else ""
-        title = f"Tier {tier} {label} - {REGION_LABELS.get(region, region)}{suffix}"
+        title = (
+            f"{data.get('name') or 'Player'} - {REGION_LABELS.get(region, region)}"
+            if player_only
+            else f"Tier {tier} {label} - {REGION_LABELS.get(region, region)}{suffix}"
+        )
         img = await asyncio.to_thread(
             _render_graph_img, lines, title, tz=tz, prediction=prediction if predict else None
         )
@@ -152,9 +163,12 @@ class GraphCog(commands.Cog):
         border: bool = False,
         predict: bool = False,
         timezone: str | None = None,
+        player_id: str | None = None,
+        player_only: bool = False,
     ) -> tuple[discord.Embed, list[discord.File], _GraphView | None]:
         # the shared body of `/graph cutoff` and `%graph`: resolve, render, and build the interactive
-        # view (or None when there's nothing to interact with). the caller sends it.
+        # view (or None when there's nothing to interact with). the caller sends it. player_id (with
+        # player_only) follows one specific player by id across chapters instead of a tier's cutoff.
         assert self.bot.holo and self.bot.user_data and self.bot.data
         region = await self._region(user_id, region)
         tz_name = timezone or await self.bot.user_data.get_settings(user_id, "timezone")
@@ -190,6 +204,8 @@ class GraphCog(commands.Cog):
             tz=tz,
             ev=ev,
             predict=predict,
+            player_id=player_id,
+            player_only=player_only,
         )
         # a view is worth showing when there's more than one chapter to switch between, a song
         # dropdown to offer, or a prediction to toggle (relay/EP events in total mode)
@@ -211,6 +227,8 @@ class GraphCog(commands.Cog):
             music_id=music_id,
             predict=predict,
             can_predict=can_predict,
+            player_id=player_id,
+            player_only=player_only,
             restrict_to=user_id,
         )
         return embed, files, view
@@ -273,8 +291,10 @@ class GraphCog(commands.Cog):
         event: str | None = None,
         by_tier: bool | None = None,
         timezone: str | None = None,
+        player_id: str | None = None,
     ) -> tuple[discord.Embed, list[discord.File], _HeatmapView | None]:
         # the shared body of `/heatmap` and `%heatmap` (chapter-switch view or None). the caller sends.
+        # player_id follows one specific player by id (e.g. a dropped-off one) across chapters.
         assert self.bot.holo and self.bot.user_data and self.bot.data
         region = await self._region(user_id, region)
         tz_name = timezone or await self.bot.user_data.get_settings(user_id, "timezone")
@@ -292,6 +312,7 @@ class GraphCog(commands.Cog):
             player_mode=player_mode,
             tz=tz,
             ev=ev,
+            player_id=player_id,
         )
         chapters = chapters_from_event(ev)
         if not files or len(chapters) <= 1:
@@ -305,6 +326,7 @@ class GraphCog(commands.Cog):
             player_mode=player_mode,
             tz=tz,
             ev=ev,
+            player_id=player_id,
             restrict_to=user_id,
         )
         return embed, files, view
@@ -377,13 +399,16 @@ class GraphCog(commands.Cog):
         player_mode: bool,
         tz: tzinfo,
         ev: EventInfo | None,
+        player_id: str | None = None,
     ) -> tuple[discord.Embed, list[discord.File]]:
         assert self.bot.holo
         try:
             # player mode needs both the player series and the cutoff series (the latter is our
-            # fetch coverage); a cutoff heatmap needs only the cutoff, so border=True skips the lookup
+            # fetch coverage); a cutoff heatmap needs only the cutoff, so border=True skips the lookup.
+            # player_id follows a specific (e.g. dropped-off) player by id instead of by rank.
             data = await self.bot.holo.get_event_graph(
-                region, tier, event_id=event_id, chapter_id=chapter, border=not player_mode
+                region, tier, event_id=event_id, chapter_id=chapter,
+                border=not player_mode, user_id=player_id,
             )
         except HolodoriError as e:
             msg = e.detail if e.status == 400 and e.detail else f"Couldn't fetch graph: {e.detail or e.status}"
@@ -600,11 +625,12 @@ class GraphCog(commands.Cog):
         return _PlayerCardView(
             self,
             region=player["region"],
-            rank=int(player["rank"]),
+            rank=int(player["rank"]),  # for a history player this is already their FORMER highest
             name=str(player["name"]),
             points=player.get("points"),
             updated=player.get("updatedAt"),
             public_id=player.get("userId"),
+            history=bool(player.get("history")),
             restrict_to=restrict_to,
         )
 
@@ -665,6 +691,8 @@ class _GraphView(HoloView):
         music_id: str | None,
         predict: bool,
         can_predict: bool = False,
+        player_id: str | None = None,
+        player_only: bool = False,
         restrict_to: int,
     ) -> None:
         super().__init__(timeout=180, restrict_to=restrict_to)
@@ -679,6 +707,8 @@ class _GraphView(HoloView):
         self.music = music
         self.predict = predict
         self.music_id = music_id
+        self.player_id = player_id
+        self.player_only = player_only
         self._song_list = songs
         self._songs = dict(songs)
         self._chapters = ChapterButtons(chapters_from_event(ev), chapter, self._on_chapter)
@@ -738,6 +768,8 @@ class _GraphView(HoloView):
             tz=self.tz,
             ev=self.ev,
             predict=self.predict,
+            player_id=self.player_id,
+            player_only=self.player_only,
         )
         await interaction.edit_original_response(embed=embed, attachments=files, view=self)
 
@@ -782,6 +814,7 @@ class _HeatmapView(HoloView):
         player_mode: bool,
         tz: tzinfo,
         ev: EventInfo | None,
+        player_id: str | None = None,
         restrict_to: int,
     ) -> None:
         super().__init__(timeout=180, restrict_to=restrict_to)
@@ -793,6 +826,7 @@ class _HeatmapView(HoloView):
         self.player_mode = player_mode
         self.tz = tz
         self.ev = ev
+        self.player_id = player_id
         self._chapters = ChapterButtons(chapters_from_event(ev), chapter, self._on_chapter)
         self._chapters.add_to(self)
 
@@ -808,6 +842,7 @@ class _HeatmapView(HoloView):
             player_mode=self.player_mode,
             tz=self.tz,
             ev=self.ev,
+            player_id=self.player_id,
         )
         # keep the view even if this chapter has no data yet (so they can switch back)
         await interaction.edit_original_response(
@@ -830,6 +865,7 @@ class _PlayerCardView(HoloLayoutView):
         points: int | None,
         updated: int | None = None,
         public_id: str | None = None,
+        history: bool = False,
         restrict_to: int,
     ) -> None:
         super().__init__(timeout=180, restrict_to=restrict_to)
@@ -837,6 +873,7 @@ class _PlayerCardView(HoloLayoutView):
         self.region = region
         self.rank = rank
         self.public_id = public_id
+        self.history = history
         label = REGION_LABELS.get(region, region)
         pts = f"{int(points):,} EP" if points is not None else "—"
         container = discord.ui.Container(
@@ -845,23 +882,30 @@ class _PlayerCardView(HoloLayoutView):
         container.add_item(
             discord.ui.TextDisplay(f"## {discord.utils.escape_markdown(name)} - {label}")
         )
-        stats = f"**Player Statistics**\n**Points:** {pts}\nCurrently rank {rank}"
+        # a history player dropped off the board, so `rank` is their former BEST rank, not a live one
+        rank_line = f"Former highest T{rank}" if history else f"Currently rank {rank}"
+        stats = f"**Player Statistics**\n**Points:** {pts}\n{rank_line}"
         if updated:
             stats += f"\n**Last Data Update:** <t:{int(updated) // 1000}:R>"
         container.add_item(discord.ui.TextDisplay(stats))
-        specs = [
-            ("Graph", "📈", self._on_graph),
-            ("Heatmap", "🔥", self._on_heatmap),
-            ("Cutoff", "✂️", self._on_cutoff),
-        ]
-        if public_id:  # the profile fetch keys on the public id, which we only have from the search
+        # a current player is graphed by their live rank; a dropped-off one has no live rank, so
+        # graph/heatmap follow them by their id instead (needs public_id). Cutoff is a tier's line,
+        # not a player's, so it's current-players-only.
+        specs: list[tuple[str, str, object]] = []
+        if not history or public_id:
+            specs.append(("Graph", "📈", self._on_graph))
+            specs.append(("Heatmap", "🔥", self._on_heatmap))
+        if not history:
+            specs.append(("Cutoff", "✂️", self._on_cutoff))
+        if public_id:  # the profile fetch keys on the public id, only known from the search
             specs.append(("Profile", "👤", self._on_profile))
-        row = discord.ui.ActionRow()
-        for lbl, emo, cb in specs:
-            btn = discord.ui.Button(label=lbl, emoji=emo, style=discord.ButtonStyle.primary)
-            btn.callback = cb  # type: ignore[assignment]
-            row.add_item(btn)
-        container.add_item(row)
+        if specs:
+            row = discord.ui.ActionRow()
+            for lbl, emo, cb in specs:
+                btn = discord.ui.Button(label=lbl, emoji=emo, style=discord.ButtonStyle.primary)
+                btn.callback = cb  # type: ignore[assignment]
+                row.add_item(btn)
+            container.add_item(row)
         self.add_item(container)
 
     async def _send(
@@ -880,15 +924,23 @@ class _PlayerCardView(HoloLayoutView):
 
     async def _on_graph(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(thinking=True)
+        # a history player is followed by id (player-only, no cutoff line); a current one by rank
         embed, files, view = await self.cog._graph_payload(
-            user_id=interaction.user.id, region=self.region, tier=self.rank
+            user_id=interaction.user.id,
+            region=self.region,
+            tier=self.rank,
+            player_id=self.public_id if self.history else None,
+            player_only=self.history,
         )
         await self._send(interaction, embed, files, view)
 
     async def _on_heatmap(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(thinking=True)
         embed, files, view = await self.cog._heatmap_payload(
-            user_id=interaction.user.id, region=self.region, tier=self.rank
+            user_id=interaction.user.id,
+            region=self.region,
+            tier=self.rank,
+            player_id=self.public_id if self.history else None,
         )
         await self._send(interaction, embed, files, view)
 
@@ -936,8 +988,13 @@ class _PlayerPickView(HoloLayoutView):
             discord.SelectOption(
                 label=str(c["name"])[:100],
                 description=(
-                    f"{REGION_LABELS.get(c['region'], c['region'])} · Rank {c['rank']}"
-                    + (f" · {int(c['points']):,} EP" if c.get("points") is not None else "")
+                    f"{REGION_LABELS.get(c['region'], c['region'])} · "
+                    + (
+                        f"Former highest T{c['rank']}"
+                        if c.get("history")
+                        else f"Rank {c['rank']}"
+                        + (f" · {int(c['points']):,} EP" if c.get("points") is not None else "")
+                    )
                 )[:100],
                 value=str(i),
             )

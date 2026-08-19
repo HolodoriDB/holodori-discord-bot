@@ -26,7 +26,8 @@ def _text_commands_embed() -> discord.Embed:
             "**%graph** / **%eph** `[region] {tier}` - Graph a tier's cutoff over the event.\n"
             "**%heatmap** `[region] {tier}` - Hourly event-point gain (EPH) heatmap.\n"
             "**%leaderboard** / **%lb** `[region]` - Current event's top 100.\n"
-            "**%player** `{name}` - Look up a player by name across every region's top 100.\n\n"
+            "**%player** `{name}` - Look up a player by name (current or former top 100).\n"
+            "**%profile** `[region] {tier}` - Profile of the player currently at a rank (1-100).\n\n"
             "-# Regions: US / AS / JP (fuzzy). Tiers: `1`, `t100`, `500`, ..."
         ),
     )

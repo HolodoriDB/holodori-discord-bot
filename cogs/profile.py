@@ -52,7 +52,7 @@ def _compose_badge_strip(items: list[tuple[int, str, bytes]]) -> bytes | None:
     canvas.save(out, "PNG")
     return out.getvalue()
 
-from helpers import embeds
+from helpers import embeds, text_commands
 from helpers.autocompletes import REGION_CHOICES, REGION_LABELS
 from helpers.emojis import emojis
 from services.holodori import HolodoriError, HolodoriNotFound
@@ -103,6 +103,64 @@ class ProfileCog(commands.Cog):
             await interaction.followup.send(embed=err or embeds.error_embed("Couldn't load that profile."))
             return
         await interaction.followup.send(view=view, files=files)
+
+    @commands.command(name="profile")
+    async def p_profile(self, ctx: commands.Context, *args: str) -> None:
+        # %profile [region] {tier} - the profile of the player CURRENTLY at that rank (1-100)
+        region, tier, leftover = text_commands.parse_region_tier(list(args))
+        if tier is None or leftover:
+            await ctx.reply(
+                embed=text_commands.help_embed(
+                    "profile", "[region] {tier}", any_order=True, aliases=[]
+                ),
+                mention_author=False,
+            )
+            return
+        assert self.bot.holo and self.bot.user_data
+        region = await self._region(ctx.author.id, region or "default")
+        async with ctx.typing():
+            if tier > 100:
+                await ctx.reply(
+                    embed=embeds.error_embed(
+                        f"T{tier} is a cutoff line, not a player - use a rank from 1-100."
+                    ),
+                    mention_author=False,
+                )
+                return
+            # the authorized leaderboard keeps each row's stable userId (= the public friend code
+            # the profile fetch keys on); find the one currently sitting at this rank
+            try:
+                lb = await self.bot.holo.get_event_leaderboard_ids(region)
+            except HolodoriError as e:
+                await ctx.reply(
+                    embed=embeds.error_embed(f"Couldn't fetch the leaderboard: {e.detail or e.status}"),
+                    mention_author=False,
+                )
+                return
+            pid = next(
+                (
+                    str(r["userId"])
+                    for r in (lb.get("rankings") or [])
+                    if r.get("rank") == tier and r.get("userId")
+                ),
+                None,
+            )
+            if not pid:
+                await ctx.reply(
+                    embed=embeds.error_embed(
+                        f"No tracked player is at T{tier} on {REGION_LABELS.get(region, region)}."
+                    ),
+                    mention_author=False,
+                )
+                return
+            view, files, err = await self.build_profile(pid, region)
+        if err is not None or view is None:
+            await ctx.reply(
+                embed=err or embeds.error_embed("Couldn't load that profile."),
+                mention_author=False,
+            )
+            return
+        await ctx.reply(view=view, files=files, mention_author=False)
 
     async def build_profile(
         self, pid: str, region: str

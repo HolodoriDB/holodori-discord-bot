@@ -308,6 +308,7 @@ class HolodoriClient:
         border: bool | None = None,
         music: bool | None = None,
         music_id: str | None = None,
+        user_id: str | None = None,
     ) -> dict:
         return await self._get(
             "/api/events/graph",
@@ -318,6 +319,7 @@ class HolodoriClient:
             border=str(border).lower() if border is not None else None,
             music=str(music).lower() if music is not None else None,
             music_id=music_id,
+            user_id=user_id,
         )
 
     async def get_event_tiers(self) -> list[dict]:
