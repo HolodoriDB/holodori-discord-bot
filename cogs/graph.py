@@ -426,7 +426,7 @@ class GraphCog(commands.Cog):
         start = data.get("startTime") or coverage[0]
         end = data.get("endTime") or coverage[-1]
 
-        label = metric.upper()  # GPH (gains/hour, default) or EPH (event points/hour)
+        label = "Gains Per Hour" if metric == "gph" else "Event Points Per Hour"
         presence: list[int] | None = None
         if player_mode:
             user_series = data.get("user") or []
@@ -845,20 +845,20 @@ class _HeatmapView(HoloView):
         self.ev = ev
         self.player_id = player_id
         self.metric = metric
-        # its own row 0; the label names the metric a click switches TO
+        # chapter buttons first (from row 0); the toggle sits on the row just below them (or row 0
+        # when there are no chapter buttons). label names the metric a click switches TO
+        self._chapters = ChapterButtons(
+            chapters_from_event(ev), chapter, self._on_chapter, max_rows=4
+        )
+        self._chapters.add_to(self)
         self._toggle = discord.ui.Button(
             label="Show EPH" if metric == "gph" else "Show GPH",
             emoji="🔁",
             style=discord.ButtonStyle.secondary,
-            row=0,
+            row=self._chapters.rows_used,
         )
         self._toggle.callback = self._on_toggle  # type: ignore[method-assign]
         self.add_item(self._toggle)
-        # chapters below the toggle
-        self._chapters = ChapterButtons(
-            chapters_from_event(ev), chapter, self._on_chapter, start_row=1, max_rows=4
-        )
-        self._chapters.add_to(self)
 
     async def _rerender(self, interaction: discord.Interaction) -> None:
         embed, files = await self.cog.render_heatmap(
