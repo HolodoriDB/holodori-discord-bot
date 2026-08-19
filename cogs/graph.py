@@ -634,97 +634,90 @@ class GraphCog(commands.Cog):
 
     async def _build_player_card(
         self,
-        orig: dict,
+        result: dict,
         *,
-        chapter: str | None,
+        query: str,
         ev: "EventInfo | None",
-        active_chapter: str | None,
+        chapter: str | None,
         restrict_to: int,
     ) -> "_PlayerCardView":
-        # a components-v2 card for ONE chapter of this player: the {Name} - {region} heading, the
-        # Points stat + gains, and the Graph / Heatmap / Cutoff buttons all live INSIDE one accent
-        # Container. the live/active chapter keeps the search's standing (Currently rank / Former
-        # highest, off the live board); any past chapter is rebuilt from that chapter's archive by the
-        # player's id (always historical there, and "no top-100 this chapter" when they never made it).
-        region = orig["region"]
-        uid = str(orig["userId"]) if orig.get("userId") else None
-        gain_stats: dict | None = None  # one small fetch adds the per-minute EP gain summary
+        # a components-v2 card built from ONE chapter-scoped search result: the {Name} - {region}
+        # heading, the Points stat + gains, and the Graph / Heatmap / Cutoff buttons all live INSIDE
+        # one accent Container. the result already carries this chapter's standing (live rank + points
+        # for the current chapter, else best-rank/history); a small fetch adds gains (and fills in the
+        # points/updatedAt for a past chapter, which the index leaves out).
+        region = result["region"]
+        uid = str(result["userId"]) if result.get("userId") else None
+        gain_stats: dict | None = None
         if uid and self.bot.holo:
             try:
                 gain_stats = await self.bot.holo.get_player_stats(region, uid, chapter_id=chapter)
             except HolodoriError:
                 gain_stats = None
-        if chapter is None or chapter == active_chapter:
-            rank = orig.get("rank")  # for a history player this is already their FORMER highest
-            name = str(orig["name"])
-            points = orig.get("points")
-            updated = orig.get("updatedAt")
-            history = bool(orig.get("history"))
-        else:
-            s = gain_stats or {}
-            rank = s.get("rank")  # best rank that chapter; None if they never made top-100 then
-            name = s.get("name") or str(orig["name"])
-            points = s.get("points")
-            updated = s.get("updatedAt")
-            history = True
+        s = gain_stats or {}
+        rank = result.get("rank")
+        points = result.get("points") if result.get("points") is not None else s.get("points")
         return _PlayerCardView(
             self,
             region=region,
             rank=int(rank) if rank is not None else None,
-            name=name,
+            name=str(result["name"]),
             points=points,
-            updated=updated,
+            updated=result.get("updatedAt") or s.get("updatedAt"),
             public_id=uid,
-            history=history,
+            history=bool(result.get("history")),
             gain_stats=gain_stats,
+            event_id=result.get("eventId"),
             ev=ev,
             chapter=chapter,
-            active_chapter=active_chapter,
-            orig=orig,
+            query=query,
             restrict_to=restrict_to,
         )
 
-    async def _player_card_view(self, player: dict, *, restrict_to: int) -> "_PlayerCardView":
-        # the entry point: resolve the event's chapters, then build the card on the chapter the search
-        # matched in. that chapter is the "origin" - its live standing lives in `player` (search), so
-        # the card uses that here and rebuilds any OTHER chapter from its archive. the card's chapter
-        # buttons switch from there. the card opens on the origin chapter.
-        ev = await self._resolve_event(player["region"], player.get("eventId"))
-        origin_chapter = player.get("chapterId") or (
-            (ev.activeChapterId or (ev.chapters[-1] if ev.chapters else None)) if ev else None
-        )
-        return await self._build_player_card(
-            player,
-            chapter=origin_chapter,
-            ev=ev,
-            active_chapter=origin_chapter,
-            restrict_to=restrict_to,
-        )
-
-    async def _player_response(
-        self, query: str, requester_id: int
-    ) -> tuple["HoloLayoutView | None", "discord.Embed | None"]:
-        # shared by %player and /event player: (v2 view, None) to send a card/picker, or
-        # (None, embed) for a usage/no-match message. searches every region's current top 100.
-        query = query.strip()
-        if not query:
-            return None, text_commands.help_embed("player", "{name}", any_order=False, aliases=[])
-        assert self.bot.holo
-        try:
-            results = await self.bot.holo.search_players(query)
-        except HolodoriError:
-            results = []
+    async def _player_research(
+        self, query: str, *, chapter: str | None, ev: "EventInfo | None", restrict_to: int
+    ) -> "HoloLayoutView":
+        # RE-SEARCH the query in one chapter across all regions and return the right view for it: a
+        # card (one clear match), a picker (several close matches), or a no-match view - each carrying
+        # chapter buttons that re-run this in another chapter. driven by the %player chapter buttons.
+        results: list[dict] = []
+        if self.bot.holo:
+            try:
+                results = await self.bot.holo.search_players(query, chapter=chapter)
+            except HolodoriError:
+                results = []
         if not results:
-            return None, embeds.error_embed(
-                f"No player matching **{discord.utils.escape_markdown(query)}** in the "
-                "current top 100 on any region."
+            return _PlayerNoMatchView(
+                self, query=query, ev=ev, chapter=chapter, restrict_to=restrict_to
             )
         # identical / very-close matches (e.g. the same name on two regions) -> ask which one
         top = results[0]
         close = [r for r in results if top["match"] - r["match"] <= 6][:10]
         if len(close) >= 2:
-            return _PlayerPickView(self, close, query, restrict_to=requester_id), None
-        return await self._player_card_view(top, restrict_to=requester_id), None
+            return _PlayerPickView(
+                self, close, query=query, ev=ev, chapter=chapter, restrict_to=restrict_to
+            )
+        return await self._build_player_card(
+            top, query=query, ev=ev, chapter=chapter, restrict_to=restrict_to
+        )
+
+    async def _player_response(
+        self, query: str, requester_id: int
+    ) -> tuple["HoloLayoutView | None", "discord.Embed | None"]:
+        # shared by %player and /event player: (v2 view, None) to send a card/picker/no-match (all with
+        # chapter buttons), or (None, embed) only for the empty-query usage message. the search runs in
+        # the current chapter first; its chapter buttons re-search any other chapter.
+        query = query.strip()
+        if not query:
+            return None, text_commands.help_embed("player", "{name}", any_order=False, aliases=[])
+        assert self.bot.holo
+        region = await self._region(requester_id, "default")
+        ev = await self._resolve_event(region, None)
+        chapter = (ev.activeChapterId or (ev.chapters[-1] if ev.chapters else None)) if ev else None
+        view = await self._player_research(
+            query, chapter=chapter, ev=ev, restrict_to=requester_id
+        )
+        return view, None
 
     @commands.command(name="player")
     async def p_player(self, ctx: commands.Context, *, query: str = "") -> None:
@@ -964,10 +957,76 @@ def _format_gains(g: dict) -> str | None:
     return "\n".join(lines)
 
 
-class _PlayerCardView(HoloLayoutView):
+def _chapter_label(ev: "EventInfo | None", cid: str | None) -> str | None:
+    for c, label, *_ in chapters_from_event(ev):
+        if c == cid:
+            return label
+    return None
+
+
+class _ResearchView(HoloLayoutView):
+    """Base for the three %player result views (card, picker, no-match). Carries the query + the chapter
+    being shown so its chapter buttons - only on a multi-chapter event, UNDER the card - RE-RUN the
+    search in the picked chapter, yielding a fresh card / picker / no-match each time."""
+
+    def __init__(
+        self,
+        cog: GraphCog,
+        *,
+        query: str,
+        ev: "EventInfo | None",
+        chapter: str | None,
+        restrict_to: int,
+        timeout: float = 180,
+    ) -> None:
+        super().__init__(timeout=timeout, restrict_to=restrict_to)
+        self.cog = cog
+        self.query = query
+        self.ev = ev
+        self.chapter = chapter
+
+    def _add_chapter_rows(self) -> None:
+        chapters = chapters_from_event(self.ev)
+        if len(chapters) <= 1:
+            return
+        row = discord.ui.ActionRow()
+        for i, (cid, clabel, started, char_id) in enumerate(chapters[:20]):
+            if i and i % 5 == 0:  # 5 buttons per row
+                self.add_item(row)
+                row = discord.ui.ActionRow()
+            btn = discord.ui.Button(label=(clabel or "?")[:80], emoji=fanmark_emoji(char_id))
+            if cid == self.chapter:
+                btn.style, btn.disabled = discord.ButtonStyle.success, True  # the one shown now
+            elif not started:
+                btn.style, btn.disabled = discord.ButtonStyle.secondary, True  # not started yet
+            else:
+                btn.style = discord.ButtonStyle.primary  # re-search this one
+
+            async def cb(interaction: discord.Interaction, cid: str = cid) -> None:
+                await self._on_chapter(interaction, cid)
+
+            btn.callback = cb  # type: ignore[method-assign]
+            row.add_item(btn)
+        self.add_item(row)
+
+    async def _on_chapter(self, interaction: discord.Interaction, chapter_id: str) -> None:
+        if chapter_id == self.chapter:
+            await interaction.response.defer()
+            return
+        await interaction.response.defer()  # deferred UPDATE; the re-search edits this same message
+        view = await self.cog._player_research(
+            self.query, chapter=chapter_id, ev=self.ev, restrict_to=self.restrict_to or 0
+        )
+        await interaction.edit_original_response(view=view)
+        view.message = interaction.message
+        self.stop()  # the new view owns the message now; don't let this one's timeout clobber it
+
+
+class _PlayerCardView(_ResearchView):
     """components-v2 %player card: the {Name} - {region} heading, the Points stat, and the Graph /
     Heatmap / Cutoff buttons all sit INSIDE one accent Container (buttons inside the "embed"). each
-    button posts its own view as a follow-up so the card itself stays put."""
+    button posts its own view as a follow-up so the card itself stays put. chapter buttons underneath
+    re-search the query in another chapter."""
 
     def __init__(
         self,
@@ -981,24 +1040,18 @@ class _PlayerCardView(HoloLayoutView):
         public_id: str | None = None,
         history: bool = False,
         gain_stats: dict | None = None,
+        event_id: str | None = None,
         ev: "EventInfo | None" = None,
         chapter: str | None = None,
-        active_chapter: str | None = None,
-        orig: dict | None = None,
+        query: str = "",
         restrict_to: int,
     ) -> None:
-        super().__init__(timeout=180, restrict_to=restrict_to)
-        self.cog = cog
+        super().__init__(cog, query=query, ev=ev, chapter=chapter, restrict_to=restrict_to)
         self.region = region
         self.rank = rank
         self.public_id = public_id
         self.history = history
-        # state the chapter buttons need to rebuild this card for another chapter
-        self.ev = ev
-        self.chapter = chapter
-        self.active_chapter = active_chapter
-        self.orig = orig or {}
-        self.event_id = self.orig.get("eventId")
+        self.event_id = event_id
         has_data = rank is not None  # no top-100 standing this chapter -> nothing to graph/heatmap
         label = REGION_LABELS.get(region, region)
         pts = f"{int(points):,} EP" if points is not None else "—"
@@ -1042,48 +1095,7 @@ class _PlayerCardView(HoloLayoutView):
                 row.add_item(btn)
             container.add_item(row)
         self.add_item(container)
-        # chapter buttons UNDER the card (relay events with >1 chapter only): each re-scopes the whole
-        # card - stats, gains, and the graph/heatmap it opens - to that chapter's data for this player
-        chapters = chapters_from_event(ev)
-        if len(chapters) > 1:
-            self._add_chapter_rows(chapters)
-
-    def _add_chapter_rows(self, chapters: list) -> None:
-        row = discord.ui.ActionRow()
-        for i, (cid, clabel, started, char_id) in enumerate(chapters[:20]):
-            if i and i % 5 == 0:  # 5 buttons per row
-                self.add_item(row)
-                row = discord.ui.ActionRow()
-            btn = discord.ui.Button(label=(clabel or "?")[:80], emoji=fanmark_emoji(char_id))
-            if cid == self.chapter:
-                btn.style, btn.disabled = discord.ButtonStyle.success, True  # the one shown now
-            elif not started:
-                btn.style, btn.disabled = discord.ButtonStyle.secondary, True  # not started yet
-            else:
-                btn.style = discord.ButtonStyle.primary  # jump to it
-
-            async def cb(interaction: discord.Interaction, cid: str = cid) -> None:
-                await self._on_chapter(interaction, cid)
-
-            btn.callback = cb  # type: ignore[method-assign]
-            row.add_item(btn)
-        self.add_item(row)
-
-    async def _on_chapter(self, interaction: discord.Interaction, chapter_id: str) -> None:
-        if chapter_id == self.chapter:
-            await interaction.response.defer()
-            return
-        await interaction.response.defer()  # deferred UPDATE; the rebuild edits this same message
-        card = await self.cog._build_player_card(
-            self.orig,
-            chapter=chapter_id,
-            ev=self.ev,
-            active_chapter=self.active_chapter,
-            restrict_to=self.restrict_to or 0,
-        )
-        await interaction.edit_original_response(view=card)
-        card.message = interaction.message
-        self.stop()  # the new card owns the message now; don't let this one's timeout clobber it
+        self._add_chapter_rows()  # chapter buttons UNDER the card (multi-chapter events): re-search
 
     async def _send(
         self,
@@ -1148,22 +1160,31 @@ class _PlayerCardView(HoloLayoutView):
         await interaction.followup.send(view=view, files=files)
 
 
-class _PlayerPickView(HoloLayoutView):
-    """components-v2 disambiguation dropdown when a %player query matches more than one player (e.g.
-    the same name on two regions); picking one edits the message into that player's card (v2 -> v2)."""
+class _PlayerPickView(_ResearchView):
+    """components-v2 disambiguation dropdown when a %player query matches more than one player in the
+    chapter (e.g. the same name on two regions); picking one edits the message into that player's card
+    (v2 -> v2). chapter buttons underneath re-search the query in another chapter."""
 
     def __init__(
-        self, cog: GraphCog, candidates: list[dict], query: str, *, restrict_to: int
+        self,
+        cog: GraphCog,
+        candidates: list[dict],
+        *,
+        query: str,
+        ev: "EventInfo | None",
+        chapter: str | None,
+        restrict_to: int,
     ) -> None:
-        super().__init__(timeout=120, restrict_to=restrict_to)
-        self.cog = cog
+        super().__init__(cog, query=query, ev=ev, chapter=chapter, restrict_to=restrict_to, timeout=120)
         self.candidates = candidates
         container = discord.ui.Container(accent_colour=discord.Colour(0x8B5CF6))
+        where = _chapter_label(ev, chapter)
         container.add_item(
             discord.ui.TextDisplay(
                 "## Multiple players found\n"
-                f"More than one player matches **{discord.utils.escape_markdown(query)}**. "
-                "Pick one below."
+                f"More than one player matches **{discord.utils.escape_markdown(query)}**"
+                + (f" in {where}" if where else "")
+                + ". Pick one below."
             )
         )
         options = [
@@ -1188,14 +1209,50 @@ class _PlayerPickView(HoloLayoutView):
         row.add_item(select)
         container.add_item(row)
         self.add_item(container)
+        self._add_chapter_rows()
 
     async def _on_pick(self, interaction: discord.Interaction) -> None:
         idx = int(interaction.data["values"][0])  # type: ignore[index,arg-type]
-        card = await self.cog._player_card_view(
-            self.candidates[idx], restrict_to=self.restrict_to or 0
+        card = await self.cog._build_player_card(
+            self.candidates[idx],
+            query=self.query,
+            ev=self.ev,
+            chapter=self.chapter,
+            restrict_to=self.restrict_to or 0,
         )
         await interaction.response.edit_message(view=card)
         card.message = interaction.message
+        self.stop()  # the card owns the message now; don't let this picker's timeout clobber it
+
+
+class _PlayerNoMatchView(_ResearchView):
+    """components-v2 "no player found" card for a chapter that yielded no match. chapter buttons
+    underneath re-search the same query in another chapter (which may match, or show a picker)."""
+
+    def __init__(
+        self,
+        cog: GraphCog,
+        *,
+        query: str,
+        ev: "EventInfo | None",
+        chapter: str | None,
+        restrict_to: int,
+    ) -> None:
+        super().__init__(cog, query=query, ev=ev, chapter=chapter, restrict_to=restrict_to)
+        container = discord.ui.Container(accent_colour=discord.Colour(0xE76A6A))
+        where = _chapter_label(ev, chapter)
+        multi = len(chapters_from_event(ev)) > 1
+        body = (
+            "## No player found\n"
+            f"No player matching **{discord.utils.escape_markdown(query)}**"
+            + (f" in {where}" if where else "")
+            + " on any region's top 100."
+        )
+        if multi:
+            body += " Try another chapter below."
+        container.add_item(discord.ui.TextDisplay(body))
+        self.add_item(container)
+        self._add_chapter_rows()
 
 
 async def setup(bot: HolodoriBot) -> None:

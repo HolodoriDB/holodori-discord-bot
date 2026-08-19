@@ -343,9 +343,14 @@ class HolodoriClient:
         data = await self._get("/api/events/tiers")
         return data.get("tiers") or [] if isinstance(data, dict) else []
 
-    async def search_players(self, query: str, region: str | None = None) -> list[dict]:
-        # fuzzy player lookup over the current top-100 (all regions unless one given); romanized
-        data = await self._get("/api/events/player_search", q=query, region=region)
+    async def search_players(
+        self, query: str, region: str | None = None, chapter: str | None = None
+    ) -> list[dict]:
+        # fuzzy player lookup over one chapter's top-100 (all regions unless one given; the current
+        # chapter unless one named); romanized + strict prefix/typo matching
+        data = await self._get(
+            "/api/events/player_search", q=query, region=region, chapter=chapter
+        )
         return data.get("players") or [] if isinstance(data, dict) else []
 
     async def get_profile(self, public_id: str, region: str = "us", lang: str | None = None) -> dict:
