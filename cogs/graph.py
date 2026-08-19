@@ -1202,7 +1202,7 @@ class _PlayerPickView(_ResearchView):
             discord.ui.TextDisplay(
                 "## Multiple players found\n"
                 f"More than one player matches **{discord.utils.escape_markdown(query)}**"
-                + (f" in {where}" if where else "")
+                + (f" in {where}'s chapter" if where else "")
                 + ". Pick one below."
             )
         )
@@ -1264,7 +1264,7 @@ class _PlayerNoMatchView(_ResearchView):
         body = (
             "## No player found\n"
             f"No player matching **{discord.utils.escape_markdown(query)}**"
-            + (f" in {where}" if where else "")
+            + (f" in {where}'s chapter" if where else "")
             + " on any region's top 100."
         )
         if multi:
