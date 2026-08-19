@@ -2,16 +2,18 @@
 
 Columns # (rank + coloured move tag: green up / red down), Name, Score, +/hr; the name column is
 squeezed so the WHOLE row (incl. separators) fits the target width, and every column pads by DISPLAY
-width, computed per GRAPHEME via wcwidth: CJK/Hangul/fullwidth = 2 cells, and a multi-codepoint emoji
-(a ZWJ sequence, a flag, a keycap, a skin-toned face) counts as ONE 2-cell glyph instead of several
-(counting those by code point overcounts them badly - e.g. a family emoji was 8 - and shoved the
-score/+ columns right). ansi escapes are zero-width so they must NOT count toward padding (see
-_rank_cell). Ported from RoboNene's generateRankingTextChanges (github.com/Ai0796/RoboNene). Known
-limitation: Discord renders CJK/Hangul at a non-2x width (and it differs desktop vs mobile), so a CJK
-name still shifts whatever column follows it a little - true in inline `code` too, so it's NOT an
-inline-vs-block thing. The only fully reliable text fix for CJK is to make the name the LAST column so
-nothing follows it; emoji, by contrast, ARE now accounted for exactly.
-"""
+width, computed per GRAPHEME via wcwidth. A multi-codepoint emoji (a ZWJ sequence, a flag, a keycap, a
+skin-toned face) counts as ONE 2-cell glyph instead of several (counting those by code point
+overcounts them badly - a family emoji was 8 - and shoved the score/+ columns right). ansi escapes are
+zero-width so they must NOT count toward padding (see _rank_cell). Ported from RoboNene's
+generateRankingTextChanges (github.com/Ai0796/RoboNene).
+
+CJK width: Discord's code font draws a CJK/Hangul/Kana char at ~1.66 EN cells, NOT 2, so counting it
+as 2 left CJK names too narrow (the more CJK, the shorter). We count the true fractional width
+(_CJK_WIDTH) and pad the fractional leftover with THREE-PER-EM spaces (~1/3 cell) - see _pad. This is
+a heuristic and TUNABLE: the real ratio differs desktop vs mobile, and it only helps if the client
+draws U+2004 fractionally rather than snapping every space to a full cell. If it can't be dialled in,
+the fully reliable fallback is to make Name the LAST column so nothing follows it."""
 
 from __future__ import annotations
 
@@ -78,40 +80,69 @@ def _graphemes(s: str) -> list[str]:
     return out
 
 
-def _cw(cluster: str) -> int:
-    # display cells for one grapheme: wcswidth knows CJK/Hangul/fullwidth (2), zero-width combining
-    # marks + variation selectors (0), and flags / keycaps / ZWJ emoji sequences (2, as one glyph) -
-    # counting those by code point is what let an emoji or a name like "하젤" shove later columns right.
-    # wcswidth returns -1 on a control char, so fall back to an east-asian estimate (controls as 0).
-    w = wcswidth(cluster)
-    if w >= 0:
-        return w
-    return sum(
-        0
-        if unicodedata.category(c)[0] == "C"
-        else 2
-        if unicodedata.east_asian_width(c) in ("W", "F")
-        else 1
+# Discord's code-block font renders a CJK/Kana/Hangul char at ~1.66 EN cells, NOT 2 - counting it as 2
+# left CJK names ~1/3 cell/char too narrow (the more CJK, the shorter). we count the true fractional
+# width and pad the leftover with THREE-PER-EM spaces (~1/3 cell). TUNABLE - the real ratio differs by
+# client (desktop vs mobile), so tweak _CJK_WIDTH against a screenshot; U+2004 only helps if the client
+# actually draws it fractionally (if it snaps every space to a full cell, the honest fix is name-last).
+_CJK_WIDTH = 1.66
+_THIRD = "\u2004"  # THREE-PER-EM SPACE (~1/3 EN cell)
+_THIRD_W = 1 / 3
+
+
+def _is_cjk_letter(cluster: str) -> bool:
+    # a plain CJK / Kana / Hangul character (renders ~1.66x), NOT a wide emoji glyph (renders ~2x):
+    # every code point is a wide/fullwidth LETTER, so emoji symbols (category S*) don't qualify
+    return all(
+        unicodedata.east_asian_width(c) in ("W", "F")
+        and unicodedata.category(c).startswith("L")
         for c in cluster
     )
 
 
-def _width(s: str) -> int:
+def _cw(cluster: str) -> float:
+    # display cells for one grapheme (EN-cell units). wcswidth knows CJK/fullwidth (2), zero-width
+    # combining marks + variation selectors (0), and flags / keycaps / ZWJ emoji sequences (2, as one
+    # glyph). a plain CJK letter is then scaled to its true ~1.66 (emoji stay 2). wcswidth returns -1
+    # on a control char, so fall back to an east-asian estimate (controls as 0).
+    w: float = wcswidth(cluster)
+    if w < 0:
+        w = sum(
+            0
+            if unicodedata.category(c)[0] == "C"
+            else 2
+            if unicodedata.east_asian_width(c) in ("W", "F")
+            else 1
+            for c in cluster
+        )
+    if w >= 2 and _is_cjk_letter(cluster):
+        return _CJK_WIDTH
+    return float(w)
+
+
+def _width(s: str) -> float:
     return sum(_cw(g) for g in _graphemes(s))
 
 
-def _fit(s: str, w: int) -> str:
-    # left-align s in exactly w display cells: take whole graphemes until the next would overflow (so
-    # an emoji is never split mid-glyph), then pad with spaces
-    used = 0
+def _pad(width: float) -> str:
+    # spaces filling `width` EN cells: whole EN spaces for the integer part + THREE-PER-EM spaces for
+    # the ~1/3 remainder, so a fractional CJK deficit is compensated. rounds to the nearest 1/3 cell.
+    thirds = max(0, int(round(width / _THIRD_W)))
+    return " " * (thirds // 3) + _THIRD * (thirds % 3)
+
+
+def _fit(s: str, w: float) -> str:
+    # left-align s in ~w display cells: take whole graphemes until the next would overflow (an emoji is
+    # never split mid-glyph), then pad the remainder with EN + three-per-em spaces
+    used = 0.0
     out: list[str] = []
     for g in _graphemes(s):
         c = _cw(g)
-        if used + c > w:
+        if used + c > w + 1e-6:
             break
         out.append(g)
         used += c
-    return "".join(out) + " " * (w - used)
+    return "".join(out) + _pad(w - used)
 
 
 @dataclass
@@ -142,7 +173,7 @@ def _change_str(v: int | None) -> str:
 _ESC = ""  # for the ```ansi block: green ↑ / red ↓ move tags
 
 
-def _rank_cell(rank: int, change: int, width: int) -> str:
+def _rank_cell(rank: int, change: int, width: float) -> str:
     # "6↑1" with the move tag coloured (green up / red down), left-aligned and padded to `width` by
     # the tag's VISIBLE length - the ansi escapes are zero-width so must NOT count toward padding
     tag = _tier_tag(change)
@@ -152,8 +183,7 @@ def _rank_cell(rank: int, change: int, width: int) -> str:
         colored = f"{_ESC}[31m{tag}{_ESC}[0m"
     else:
         colored = tag
-    pad = max(0, width - _width(f"{rank}{tag}"))
-    return f"{rank}{colored}{' ' * pad}"
+    return f"{rank}{colored}{_pad(max(0.0, width - _width(f'{rank}{tag}')))}"
 
 
 def _clean(name: str) -> str:
