@@ -292,9 +292,10 @@ class GraphCog(commands.Cog):
         by_tier: bool | None = None,
         timezone: str | None = None,
         player_id: str | None = None,
+        metric: str = "gph",
     ) -> tuple[discord.Embed, list[discord.File], _HeatmapView | None]:
-        # the shared body of `/heatmap` and `%heatmap` (chapter-switch view or None). the caller sends.
-        # player_id follows one specific player by id (e.g. a dropped-off one) across chapters.
+        # the shared body of `/heatmap` and `%heatmap` (metric toggle + chapter-switch view). the caller
+        # sends. player_id follows one specific player by id (e.g. a dropped-off one) across chapters.
         assert self.bot.holo and self.bot.user_data and self.bot.data
         region = await self._region(user_id, region)
         tz_name = timezone or await self.bot.user_data.get_settings(user_id, "timezone")
@@ -313,9 +314,11 @@ class GraphCog(commands.Cog):
             tz=tz,
             ev=ev,
             player_id=player_id,
+            metric=metric,
         )
-        chapters = chapters_from_event(ev)
-        if not files or len(chapters) <= 1:
+        # a view is always attached so the GPH<->EPH toggle is available; chapter buttons only show
+        # on multi-chapter (relay) events. skipped only when there's no image to toggle.
+        if not files:
             return embed, files, None
         view = _HeatmapView(
             self,
@@ -327,13 +330,14 @@ class GraphCog(commands.Cog):
             tz=tz,
             ev=ev,
             player_id=player_id,
+            metric=metric,
             restrict_to=user_id,
         )
         return embed, files, view
 
     @app_commands.command(
         name="heatmap",
-        description="Hourly event point gain (EPH) heatmap for a player, or a tier's cutoff.",
+        description="Hourly gains-per-hour (GPH) heatmap for a player, or a tier's cutoff. Toggle EPH.",
     )
     @app_commands.allowed_installs(guilds=True, users=True)
     @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
@@ -400,6 +404,7 @@ class GraphCog(commands.Cog):
         tz: tzinfo,
         ev: EventInfo | None,
         player_id: str | None = None,
+        metric: str = "gph",
     ) -> tuple[discord.Embed, list[discord.File]]:
         assert self.bot.holo
         try:
@@ -421,6 +426,7 @@ class GraphCog(commands.Cog):
         start = data.get("startTime") or coverage[0]
         end = data.get("endTime") or coverage[-1]
 
+        label = metric.upper()  # GPH (gains/hour, default) or EPH (event points/hour)
         presence: list[int] | None = None
         if player_mode:
             user_series = data.get("user") or []
@@ -428,10 +434,10 @@ class GraphCog(commands.Cog):
                 return embeds.error_embed(f"No tracked player is at T{tier} for this event."), []
             value_series = user_series
             presence = [int(p[0]) for p in user_series]
-            title = f"{data.get('name') or f'T{tier}'} EPH - {REGION_LABELS.get(region, region)}"
+            title = f"{data.get('name') or f'T{tier}'} {label} - {REGION_LABELS.get(region, region)}"
         else:
             value_series = tier_series
-            title = f"Tier {tier} Cutoff EPH - {REGION_LABELS.get(region, region)}"
+            title = f"Tier {tier} Cutoff {label} - {REGION_LABELS.get(region, region)}"
 
         img = await asyncio.to_thread(
             _render_heatmap_img,
@@ -443,6 +449,7 @@ class GraphCog(commands.Cog):
             coverage=coverage,
             presence=presence,
             tz=tz,
+            mode=metric,
         )
         embed = embeds.embed(title=title)
         last_ms = max((int(p[0]) for p in value_series), default=0)
@@ -810,7 +817,7 @@ class _GraphView(HoloView):
 
 
 class _HeatmapView(HoloView):
-    """holomem chapter buttons (relay events) that re-render the heatmap for the picked chapter."""
+    """A GPH<->EPH metric toggle plus, on relay events, holomem chapter buttons - each re-renders."""
 
     def __init__(
         self,
@@ -824,6 +831,7 @@ class _HeatmapView(HoloView):
         tz: tzinfo,
         ev: EventInfo | None,
         player_id: str | None = None,
+        metric: str = "gph",
         restrict_to: int,
     ) -> None:
         super().__init__(timeout=180, restrict_to=restrict_to)
@@ -836,27 +844,48 @@ class _HeatmapView(HoloView):
         self.tz = tz
         self.ev = ev
         self.player_id = player_id
-        self._chapters = ChapterButtons(chapters_from_event(ev), chapter, self._on_chapter)
+        self.metric = metric
+        # its own row 0; the label names the metric a click switches TO
+        self._toggle = discord.ui.Button(
+            label="Show EPH" if metric == "gph" else "Show GPH",
+            emoji="🔁",
+            style=discord.ButtonStyle.secondary,
+            row=0,
+        )
+        self._toggle.callback = self._on_toggle  # type: ignore[method-assign]
+        self.add_item(self._toggle)
+        # chapters below the toggle
+        self._chapters = ChapterButtons(
+            chapters_from_event(ev), chapter, self._on_chapter, start_row=1, max_rows=4
+        )
         self._chapters.add_to(self)
+
+    async def _rerender(self, interaction: discord.Interaction) -> None:
+        embed, files = await self.cog.render_heatmap(
+            region=self.region,
+            tier=self.tier,
+            event_id=self.event_id,
+            chapter=self.chapter,
+            player_mode=self.player_mode,
+            tz=self.tz,
+            ev=self.ev,
+            player_id=self.player_id,
+            metric=self.metric,
+        )
+        # keep the view even if this chapter has no data yet (so they can switch back / toggle)
+        await interaction.edit_original_response(embed=embed, attachments=files, view=self)
+
+    async def _on_toggle(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
+        self.metric = "eph" if self.metric == "gph" else "gph"
+        self._toggle.label = "Show EPH" if self.metric == "gph" else "Show GPH"
+        await self._rerender(interaction)
 
     async def _on_chapter(self, interaction: discord.Interaction, chapter_id: str) -> None:
         await interaction.response.defer()
         self.chapter = chapter_id
         self._chapters.set_current(chapter_id)
-        embed, files = await self.cog.render_heatmap(
-            region=self.region,
-            tier=self.tier,
-            event_id=self.event_id,
-            chapter=chapter_id,
-            player_mode=self.player_mode,
-            tz=self.tz,
-            ev=self.ev,
-            player_id=self.player_id,
-        )
-        # keep the view even if this chapter has no data yet (so they can switch back)
-        await interaction.edit_original_response(
-            embed=embed, attachments=files, view=self
-        )
+        await self._rerender(interaction)
 
 
 def _format_gains(g: dict) -> str | None:

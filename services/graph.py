@@ -74,6 +74,7 @@ _FLAG_PD = (255, 205, 70, 255)  # yellow "*": partial data (a real fetch gap)
 _FLAG_NP = (96, 176, 240, 255)  # blue "+": N+ (player off the top 100 part of the hour)
 _COVER_MS = 60_000  # each fetch covers +-this; larger gaps count as missing time
 _PD_MISSING_MS = 120_000  # >2 min gap in an hour -> partial data
+_GPH_WHITE_POINT = 32  # gph colour scale caps here (matches sbuga); busier hours clamp to the top
 
 
 def _fmt_score(n: float) -> str:
@@ -316,18 +317,27 @@ def render_heatmap(
     coverage: list[int] | None = None,
     presence: list[int] | None = None,
     tz: datetime.tzinfo | None = None,
+    mode: str = "eph",
 ) -> bytes:
-    """day x hour grid coloured by event points gained per hour (EPH).
+    """day x hour grid coloured by an hourly rate for a player/cutoff.
 
-    `value_series` is the cumulative [[ms, score], ...] to derive EPH from. `coverage` is the fetch
-    timestamps (defaults to the series' own) used to flag our gaps as MD/PD. `presence` (player
+    mode "eph" colours each hour by event points gained that hour; mode "gph" by the number of gains
+    (score rises - a gain is any rise, attributed to the hour we first see the higher score, same as
+    sbuga's games-per-hour), on a fixed 0..`_GPH_WHITE_POINT` scale so counts compare across cells.
+
+    `value_series` is the cumulative [[ms, score], ...] to derive the rate from. `coverage` is the
+    fetch timestamps (defaults to the series' own) used to flag our gaps as MD/PD. `presence` (player
     mode) is the timestamps the player was on the top 100, used to flag ND (off all hour) / N+.
     """
     tz = tz or datetime.timezone.utc
+    gph = mode == "gph"
     pts = sorted((int(x), float(y)) for x, y in value_series)
     if len(pts) < 2 or not start_ms or not end_ms or end_ms <= start_ms:
         return _small_img("Not enough data yet.")
     xs = [p[0] for p in pts]
+    # gph counts discrete gains: a gain sits at the LATER point of any consecutive rise (when we first
+    # see the higher score), so per cell we count these timestamps rather than summing a cumulative delta
+    gain_ts = [pts[i][0] for i in range(1, len(pts)) if pts[i][1] > pts[i - 1][1]] if gph else []
     cov = sorted(int(t) for t in (coverage if coverage is not None else xs))
     merged = _covered_intervals(cov)
     pres = sorted(int(t) for t in presence) if presence is not None else None
@@ -374,11 +384,17 @@ def render_heatmap(
                 plus = (c_ct - p_ct) > 0  # off the top 100 part of the hour
             else:
                 plus = False
-            val = max(0.0, _cum_at(pts, xs, hi) - _cum_at(pts, xs, lo))
+            if gph:  # gains attributed to [lo, hi): count their timestamps in-window
+                val = float(bisect.bisect_left(gain_ts, hi) - bisect.bisect_left(gain_ts, lo))
+            else:
+                val = max(0.0, _cum_at(pts, xs, hi) - _cum_at(pts, xs, lo))
             pd = missing > _PD_MISSING_MS
             has_pd, has_np = has_pd or pd, has_np or plus
             cells[(row, hour)] = ("count", val, plus, pd)
             max_val = max(max_val, val)
+
+    # eph scales to the busiest hour; gph to a fixed cap so counts read the same across heatmaps
+    scale = float(_GPH_WHITE_POINT) if gph else max_val
 
     label_w = 110 * _SS
     cell_w, cell_h = 46 * _SS, 38 * _SS
@@ -436,12 +452,12 @@ def render_heatmap(
                 draw.text((cx + cell_w // 2, cy + cell_h // 2), "ND", font=f_cell, fill=_ND_TEXT, anchor="mm")
                 continue
             _, val, plus, pd = kind
-            color = (255, 255, 255, 255) if val <= 0 else _heat_color(val / max_val)
+            color = (255, 255, 255, 255) if val <= 0 else _heat_color(val / scale)
             draw.rectangle(box, fill=color)
             bright = 0.299 * color[0] + 0.587 * color[1] + 0.114 * color[2]
             draw.text(
                 (cx + cell_w // 2, cy + cell_h // 2),
-                _fmt_gain(val),
+                str(int(val)) if gph else _fmt_gain(val),
                 font=f_cell,
                 fill=_TEXT if bright < 150 else _BG,
                 anchor="mm",
@@ -451,17 +467,19 @@ def render_heatmap(
             if plus:  # off the top 100 part of the hour - blue plus, top-left
                 draw.text((cx + 3 * _SS, cy + _SS), "+", font=f_flag, fill=_FLAG_NP, anchor="la")
 
-    # legend: a white "+0" swatch (off the gradient) then the gradient bar
+    # legend: a white zero swatch (off the gradient) then the gradient bar
     ly = gy0 + num_days * cell_h + 14 * _SS
     sw = 16 * _SS
     draw.rectangle([gx0, ly, gx0 + sw, ly + 12 * _SS], fill=(255, 255, 255, 255))
-    draw.text((gx0 + sw // 2, ly + 16 * _SS), "+0", font=f_axis, fill=_MUTED, anchor="mt")
+    draw.text((gx0 + sw // 2, ly + 16 * _SS), "0" if gph else "+0", font=f_axis, fill=_MUTED, anchor="mt")
     bar_x = gx0 + sw + 22 * _SS
     lw = 200 * _SS
     for i in range(lw):
         draw.line([(bar_x + i, ly), (bar_x + i, ly + 12 * _SS)], fill=_heat_color(i / lw), width=1)
-    draw.text((bar_x + lw, ly + 16 * _SS), _fmt_score(max_val), font=f_axis, fill=_MUTED, anchor="rt")
-    draw.text((bar_x + lw + 16 * _SS, ly + 6 * _SS), "event points / hour", font=f_axis, fill=_MUTED, anchor="lm")
+    top_label = str(int(scale)) if gph else _fmt_score(scale)
+    draw.text((bar_x + lw, ly + 16 * _SS), top_label, font=f_axis, fill=_MUTED, anchor="rt")
+    unit = "gains / hour" if gph else "event points / hour"
+    draw.text((bar_x + lw + 16 * _SS, ly + 6 * _SS), unit, font=f_axis, fill=_MUTED, anchor="lm")
 
     # marker legend: one line per marker that actually appears. left-aligned to the IMAGE edge
     # (like the title), not the grid, with a gap below the gradient bar
