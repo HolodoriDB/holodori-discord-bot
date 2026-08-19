@@ -322,6 +322,23 @@ class HolodoriClient:
             user_id=user_id,
         )
 
+    async def get_player_stats(
+        self,
+        region: str,
+        user_id: str,
+        *,
+        event_id: str | None = None,
+        chapter_id: str | None = None,
+    ) -> dict:
+        # per-minute EP gain summary for one player: {lastGain, lastGainAt, avgGain, gainCount}
+        return await self._get(
+            "/api/events/player_stats",
+            region=region,
+            user_id=user_id,
+            event_id=event_id,
+            chapter_id=chapter_id,
+        )
+
     async def get_event_tiers(self) -> list[dict]:
         data = await self._get("/api/events/tiers")
         return data.get("tiers") or [] if isinstance(data, dict) else []

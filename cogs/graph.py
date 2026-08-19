@@ -619,9 +619,17 @@ class GraphCog(commands.Cog):
         if view is not None:
             view.message = msg
 
-    def _player_card_view(self, player: dict, *, restrict_to: int) -> "_PlayerCardView":
+    async def _player_card_view(self, player: dict, *, restrict_to: int) -> "_PlayerCardView":
         # a components-v2 card: the {Name} - {region} heading, the Points stat, and the Graph /
-        # Heatmap / Cutoff buttons all live INSIDE one accent Container (buttons inside the "embed")
+        # Heatmap / Cutoff buttons all live INSIDE one accent Container (buttons inside the "embed").
+        # one small fetch adds the per-minute EP gain summary; any failure just omits those lines.
+        gain_stats: dict | None = None
+        uid = player.get("userId")
+        if uid and self.bot.holo:
+            try:
+                gain_stats = await self.bot.holo.get_player_stats(player["region"], str(uid))
+            except HolodoriError:
+                gain_stats = None
         return _PlayerCardView(
             self,
             region=player["region"],
@@ -631,6 +639,7 @@ class GraphCog(commands.Cog):
             updated=player.get("updatedAt"),
             public_id=player.get("userId"),
             history=bool(player.get("history")),
+            gain_stats=gain_stats,
             restrict_to=restrict_to,
         )
 
@@ -657,7 +666,7 @@ class GraphCog(commands.Cog):
         close = [r for r in results if top["match"] - r["match"] <= 6][:10]
         if len(close) >= 2:
             return _PlayerPickView(self, close, query, restrict_to=requester_id), None
-        return self._player_card_view(top, restrict_to=requester_id), None
+        return await self._player_card_view(top, restrict_to=requester_id), None
 
     @commands.command(name="player")
     async def p_player(self, ctx: commands.Context, *, query: str = "") -> None:
@@ -850,6 +859,28 @@ class _HeatmapView(HoloView):
         )
 
 
+def _format_gains(g: dict) -> str | None:
+    """The "Gains" section body: gain amounts + the estimated gain method (overall and last hour).
+    Returns None when the player has no recorded gains, so the whole section is skipped."""
+    last = g.get("lastGain")
+    if last is None:
+        return None
+    lines = ["**Gains**"]
+    line = f"**Last Gain Amount:** +{int(last):,} EP"
+    if g.get("lastGainAt"):
+        line += f" (<t:{int(g['lastGainAt']) // 1000}:R>)"
+    lines.append(line)
+    avg = g.get("avgGain")
+    if avg is not None:
+        lines.append(f"**Average Gain Amount (Last 100):** +{int(avg):,} EP")
+    # a null method from the backend = too few gains to call it; "No Gain" is an explicit last-hour case
+    lines.append(f"**Estimated Most Used Method:** {g.get('method') or 'Not enough info'}")
+    lines.append(
+        f"**Estimated Most Used Method (Last Hour):** {g.get('methodHour') or 'Not enough info'}"
+    )
+    return "\n".join(lines)
+
+
 class _PlayerCardView(HoloLayoutView):
     """components-v2 %player card: the {Name} - {region} heading, the Points stat, and the Graph /
     Heatmap / Cutoff buttons all sit INSIDE one accent Container (buttons inside the "embed"). each
@@ -866,6 +897,7 @@ class _PlayerCardView(HoloLayoutView):
         updated: int | None = None,
         public_id: str | None = None,
         history: bool = False,
+        gain_stats: dict | None = None,
         restrict_to: int,
     ) -> None:
         super().__init__(timeout=180, restrict_to=restrict_to)
@@ -888,6 +920,11 @@ class _PlayerCardView(HoloLayoutView):
         if updated:
             stats += f"\n**Last Data Update:** <t:{int(updated) // 1000}:R>"
         container.add_item(discord.ui.TextDisplay(stats))
+        # a separate "Gains" section below the stats: gain amounts + the estimated gain method (every
+        # gain is captured, since minute-by-minute tracking has no gaps)
+        gains_text = _format_gains(gain_stats) if gain_stats else None
+        if gains_text:
+            container.add_item(discord.ui.TextDisplay(gains_text))
         # a current player is graphed by their live rank; a dropped-off one has no live rank, so
         # graph/heatmap follow them by their id instead (needs public_id). Cutoff is a tier's line,
         # not a player's, so it's current-players-only.
@@ -1009,7 +1046,9 @@ class _PlayerPickView(HoloLayoutView):
 
     async def _on_pick(self, interaction: discord.Interaction) -> None:
         idx = int(interaction.data["values"][0])  # type: ignore[index,arg-type]
-        card = self.cog._player_card_view(self.candidates[idx], restrict_to=self.restrict_to or 0)
+        card = await self.cog._player_card_view(
+            self.candidates[idx], restrict_to=self.restrict_to or 0
+        )
         await interaction.response.edit_message(view=card)
         card.message = interaction.message
 
