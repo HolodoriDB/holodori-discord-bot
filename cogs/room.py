@@ -36,8 +36,15 @@ _CODE = r"[0-9x]{4}-[0-9x]{4}"
 _ROOM_RE = re.compile(rf"^(?P<name>.+)-(?P<code>{_CODE})(?:-(?P<players>[0-9fx]))?$")
 _HAS_CODE = re.compile(rf"-{_CODE}(?:-[0-9fx])?$")
 
-# a code may be typed with or without the dash: 1111-2222 or 11112222
-_CODE_TOKEN = re.compile(r"^(\d{4})-?(\d{4})$")
+# a code may be typed with or without a separator: 1111-2222, 1111 2222 or 11112222
+_CODE_TOKEN = re.compile(r"^(\d{4})[\s-]?(\d{4})$")
+# a space-separated code that got split across two message args ("%rm 1111 2222") - rejoin the two
+# 4-digit halves into one dashed token before the args are split apart
+_SPACED_CODE = re.compile(r"(?<!\d)(\d{4})\s+(\d{4})(?!\d)")
+
+
+def _join_spaced_code(text: str) -> str:
+    return _SPACED_CODE.sub(r"\1-\2", text)
 # players token: 0-4, or the literal "f" (full) - accepted the same way the slash choice value is
 _PLAYERS_TOKEN = re.compile(r"[0-4f]", re.IGNORECASE)
 _MSG_PLAYERS = re.compile(r"^\+([0-4f])$", re.IGNORECASE)
@@ -70,7 +77,7 @@ def _fmt_code(code: int) -> str:
 
 
 def _code_int(token: str) -> int:
-    return int(token.replace("-", ""))
+    return int(re.sub(r"\D", "", token))  # strip dash / space separators
 
 
 def _norm_players(raw: str | None) -> str | None:
@@ -273,7 +280,8 @@ class RoomCog(commands.Cog):
         )
 
     async def _execute_message(self, message: discord.Message, content: str) -> None:
-        args = content.split()[1:]
+        # rejoin a space-separated code ("%rm 1111 2222") before splitting, so its halves stay one token
+        args = _join_spaced_code(content).split()[1:]
         code: int | None = None
         players: str | None = None
         for arg in args:
